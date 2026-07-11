@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a policy-safe improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: policy
+    attributes:
+      label: X policy and privacy impact
+      description: Explain new reads, writes, automation or stored data.
+    validations:
+      required: true

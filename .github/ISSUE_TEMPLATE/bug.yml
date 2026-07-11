@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible non-security problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private X content or security vulnerabilities. Use the private security flow for vulnerabilities.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide sanitized steps and sample data.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Relevant checks
+      description: Build, browser, X response code, or logs with all secrets removed.

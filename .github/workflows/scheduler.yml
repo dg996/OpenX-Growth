@@ -1,0 +1,23 @@
+name: Publish scheduled content
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call protected publisher
+        env:
+          OPENX_BASE_URL: ${{ secrets.OPENX_BASE_URL }}
+          OPENX_CRON_SECRET: ${{ secrets.OPENX_CRON_SECRET }}
+        run: |
+          if [ -z "$OPENX_BASE_URL" ] || [ -z "$OPENX_CRON_SECRET" ]; then
+            echo "Scheduler is not configured for this fork; skipping."
+            exit 0
+          fi
+          curl --fail-with-body --retry 2 --max-time 60 \
+            -X POST "${OPENX_BASE_URL%/}/api/cron/publish" \
+            -H "Authorization: Bearer $OPENX_CRON_SECRET"

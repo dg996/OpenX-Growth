@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "openx-growth",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "openx-growth",
+      "database_id": "YOUR_D1_DATABASE_ID",
+      "migrations_dir": "drizzle"
+    }
+  ]
+}
