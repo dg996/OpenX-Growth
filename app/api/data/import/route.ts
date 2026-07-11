@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getDb } from "../../../../db";
 import { analyticsSnapshots, feedback, posts } from "../../../../db/schema";
-import { hasApiAuth, hasAppAccess, requireCsrf } from "../../../../lib/security";
+import { hasApiAuth, hasAppAccess, configuredInstanceResponse, requireCsrf } from "../../../../lib/security";
 
 const nullableText = (max:number) => z.string().max(max).nullable().optional();
 const postSchema = z.object({
@@ -18,6 +18,7 @@ const analyticsSchema = z.object({id:z.number().int().positive().optional(),post
 const importSchema = z.object({schemaVersion:z.literal(1),posts:z.array(postSchema).max(1_000).default([]),feedback:z.array(feedbackSchema).max(5_000).default([]),analytics:z.array(analyticsSchema).max(10_000).default([])}).strict();
 
 export async function POST(request:NextRequest) {
+  const blocked=configuredInstanceResponse(); if(blocked)return blocked;
   const api=hasApiAuth(request);
   if(!await hasAppAccess(request)&&!api)return NextResponse.json({error:"UNAUTHORIZED"},{status:401});
   if(!api)try{requireCsrf(request)}catch{return NextResponse.json({error:"INVALID_CSRF"},{status:403})}

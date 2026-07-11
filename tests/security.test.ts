@@ -16,6 +16,13 @@ test("sealed sessions do not expose plaintext",async()=>{
   assert.equal(await safeEqual("same-value","other-value"),false);
 });
 
+test("demo mode allows browsing without access token",async()=>{
+  delete process.env.APP_ACCESS_TOKEN;
+  const {hasAppAccess}=await import("../lib/security.ts");
+  const request={headers:{get:()=>null},cookies:{get:()=>undefined}} as import("next/server").NextRequest;
+  assert.equal(await hasAppAccess(request),true);
+});
+
 test("X write routes require CSRF or dedicated bearer authorization",()=>{
   for(const path of ["app/api/x/reply/route.ts","app/api/posts/route.ts","app/api/posts/[id]/route.ts","app/api/posts/[id]/publish/route.ts","app/api/feedback/route.ts","app/api/data/import/route.ts","app/api/data/delete/route.ts","app/api/ai/generate/route.ts"]){
     const source=readFileSync(new URL(`../${path}`,import.meta.url),"utf8");

@@ -1,5 +1,5 @@
 import type { NextRequest, NextResponse } from "next/server";
-import { appConfig } from "./config.ts";
+import { appConfig, instanceConfigured } from "./config.ts";
 
 export const SESSION_COOKIE = "__Host-openx_session";
 export const OAUTH_COOKIE = "__Host-openx_oauth";
@@ -67,10 +67,19 @@ export function hasApiAuth(request:NextRequest) {
   return Boolean(token && request.headers.get("authorization") === `Bearer ${token}`);
 }
 
+export function isAccessProtected() {
+  return Boolean(appConfig().appAccessToken);
+}
+
 export async function hasAppAccess(request:NextRequest) {
   const expected = appConfig().appAccessToken;
-  if (!expected) return false;
+  if (!expected) return true;
   if (request.headers.get("authorization") === `Bearer ${expected}`) return true;
   const auth = await unseal<{authorized:boolean}>(readCookie(request,AUTH_COOKIE));
   return auth?.authorized === true;
+}
+
+export function configuredInstanceResponse() {
+  if (instanceConfigured()) return null;
+  return NextResponse.json({error:"INSTANCE_NOT_CONFIGURED",message:"Configure X_CLIENT_ID and SESSION_SECRET in your environment to enable this action."},{status:503});
 }

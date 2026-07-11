@@ -31,10 +31,16 @@ export const appConfig = () => ({
   syncTtlSeconds: Number(env("SYNC_TTL_SECONDS","900")),
 });
 
+export function instanceConfigured() {
+  const config = appConfig();
+  return Boolean(config.xClientId && config.sessionSecret);
+}
+
 export function publicConfig() {
   const config = appConfig();
   return {
-    configured:Boolean(config.xClientId && config.sessionSecret),
+    configured:instanceConfigured(),
+    demoMode:!config.appAccessToken,
     accessProtected:Boolean(config.appAccessToken),
     aiConfigured:Boolean(config.aiApiKey),
     aiContentApproved:config.xAiContentApproved,

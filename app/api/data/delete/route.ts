@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "../../../../db";
 import { analyticsSnapshots, apiUsage, feedback, posts, secureStore, syncCache } from "../../../../db/schema";
-import { clearXSession, hasAppAccess, requireCsrf } from "../../../../lib/security";
+import { clearXSession, hasAppAccess, configuredInstanceResponse, requireCsrf } from "../../../../lib/security";
 
 export async function DELETE(request:NextRequest) {
+  const blocked=configuredInstanceResponse(); if(blocked)return blocked;
   if (!await hasAppAccess(request)) return NextResponse.json({error:"UNAUTHORIZED"},{status:401});
   try { requireCsrf(request); } catch { return NextResponse.json({error:"INVALID_CSRF"},{status:403}); }
   const db=getDb();

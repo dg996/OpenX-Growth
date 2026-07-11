@@ -51,7 +51,7 @@ type ContentItem = {
 };
 
 type SavePostInput = {text:string;thread:string[];scheduledAt?:number;evergreen:boolean;evergreenIntervalDays:number;generated:boolean;topic?:string;hook?:string};
-type AppRuntimeConfig={configured:boolean;accessProtected:boolean;aiConfigured:boolean;aiContentApproved:boolean;aiRepliesApproved:boolean;evergreenEnabled:boolean;syncTtlSeconds:number};
+type AppRuntimeConfig={configured:boolean;demoMode:boolean;accessProtected:boolean;aiConfigured:boolean;aiContentApproved:boolean;aiRepliesApproved:boolean;evergreenEnabled:boolean;syncTtlSeconds:number};
 type AnalyticsData={source:string;totals:{impressions:number;likes:number;replies:number;reposts:number};byTopic:Array<{label:string;posts:number;impressions:number;engagements:number}>;byFormat:Array<{label:string;posts:number;impressions:number;engagements:number}>;byHook:Array<{label:string;posts:number;impressions:number;engagements:number}>;byHour:Array<{label:string;posts:number;impressions:number;engagements:number}>;usage:{reads:number;writes:number;maxReads:number;maxWrites:number}};
 type AccountProfile={id:string;name:string;username:string;profileImageUrl?:string};
 type StoredPost={id:string;text:string;status:string;scheduledAt?:number;publishedAt?:number;evergreen?:boolean;lastError?:string};
@@ -169,8 +169,9 @@ const apiSetupSteps = [
 
 function SetupGuide({ onClose, onGoToSettings }: { onClose: () => void; onGoToSettings: () => void }) {
   const [step, setStep] = useState(0);
-  const [origin] = useState(()=>typeof window!=="undefined"?window.location.origin:"https://your-domain.com");
-  const callback = `${origin}/api/auth/x/callback`;
+  const [origin, setOrigin] = useState("https://your-domain.com");
+  useEffect(() => { setOrigin(window.location.origin); }, []);
+  const callback = `${origin}/api/x/oauth/callback`;
   const finish = () => {
     localStorage.setItem("openx-onboarding-complete", "true");
     onGoToSettings();
@@ -204,8 +205,9 @@ export default function HomePage() {
   const [content, setContent] = useState(initialContent);
   const [contentFilter, setContentFilter] = useState("All");
   const [connected, setConnected] = useState(false);
-  const [setupGuide, setSetupGuide] = useState(()=>typeof window!=="undefined"&&localStorage.getItem("openx-onboarding-complete")!=="true");
-  const [theme, setTheme] = useState<"dark" | "light">(()=>typeof window!=="undefined"?(localStorage.getItem("openx-theme") as "dark"|"light"|null)??(window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):"dark");
+  const [setupGuide, setSetupGuide] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [unread, setUnread] = useState(3);
   const [opportunityData, setOpportunityData] = useState<ReplyOpportunity[]>(opportunities);
@@ -220,16 +222,27 @@ export default function HomePage() {
   const [analytics,setAnalytics]=useState<AnalyticsData>();
   const [account,setAccount]=useState<AccountProfile>();
   useEffect(() => {
+    const storedTheme = localStorage.getItem("openx-theme") as "dark" | "light" | null;
+    const preferredTheme = storedTheme ?? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    setTheme(preferredTheme);
+    document.documentElement.dataset.theme = preferredTheme;
+    setSetupGuide(localStorage.getItem("openx-onboarding-complete") !== "true");
+    setPreferencesReady(true);
+  }, []);
+  useEffect(() => {
+    if (!preferencesReady) return;
     document.documentElement.dataset.theme = theme;
-  }, [theme]);
+  }, [theme, preferencesReady]);
   useEffect(() => {
     void (async()=>{
-      const [csrfResponse,statusResponse,postsResponse,analyticsResponse]=await Promise.all([fetch("/api/security/csrf"),fetch("/api/x/status"),fetch("/api/posts"),fetch("/api/analytics")]);
+      const statusResponse=await fetch("/api/x/status");
       if(statusResponse.status===401){window.location.href="/login";return}
+      const status=statusResponse.ok?await statusResponse.json() as AppRuntimeConfig&{connected:boolean}:null;
+      const [csrfResponse,postsResponse,analyticsResponse]=await Promise.all([fetch("/api/security/csrf"),fetch("/api/posts"),fetch("/api/analytics")]);
       if(csrfResponse.ok)setCsrf(((await csrfResponse.json()) as {token:string}).token);
-      if(postsResponse.ok){const payload=await postsResponse.json() as PostsPayload;setContent(payload.posts.map((post)=>({id:post.id,text:post.text,status:post.status.charAt(0).toUpperCase()+post.status.slice(1) as PostStatus,date:post.scheduledAt?new Date(post.scheduledAt).toLocaleString():post.publishedAt?new Date(post.publishedAt).toLocaleString():"—",evergreen:post.evergreen,lastError:post.lastError})))}
-      if(analyticsResponse.ok)setAnalytics(await analyticsResponse.json() as AnalyticsData);
-      if(statusResponse.ok){const status=await statusResponse.json() as AppRuntimeConfig&{connected:boolean};setConnected(Boolean(status.connected));setRuntimeConfig(status);if(status.connected){const response=await fetch("/api/x/sync");if(response.ok){const payload=await response.json() as SyncPayload;setAccount(payload.account);setOpportunityData(payload.opportunities);setSignalData(payload.ideas);setDataSource("live");setLastSync(payload.syncedAt)}}}
+      if(postsResponse.ok){const payload=await postsResponse.json() as PostsPayload;if(payload.posts.length||status?.configured)setContent(payload.posts.map((post)=>({id:post.id,text:post.text,status:post.status.charAt(0).toUpperCase()+post.status.slice(1) as PostStatus,date:post.scheduledAt?new Date(post.scheduledAt).toLocaleString():post.publishedAt?new Date(post.publishedAt).toLocaleString():"—",evergreen:post.evergreen,lastError:post.lastError})))}
+      if(analyticsResponse.ok){const analyticsPayload=await analyticsResponse.json() as AnalyticsData;if(analyticsPayload.source!=="empty")setAnalytics(analyticsPayload)}
+      if(status){setConnected(Boolean(status.connected));setRuntimeConfig(status);if(status.connected){const response=await fetch("/api/x/sync");if(response.ok){const payload=await response.json() as SyncPayload;setAccount(payload.account);setOpportunityData(payload.opportunities);setSignalData(payload.ideas);setDataSource("live");setLastSync(payload.syncedAt)}}}
     })();
   }, []);
 
@@ -369,7 +382,8 @@ function AnalyticsView({ range, setRange, data }: { range: string; setRange: (v:
 
 function SettingsView({ connected, config, csrf, onDisconnected, onOpenGuide }: { connected:boolean;config:AppRuntimeConfig;csrf:string;onDisconnected:()=>void;onOpenGuide:()=>void }) {
   const [message,setMessage]=useState("");
-  const callback = typeof window === "undefined" ? "https://your-domain.com/api/auth/x/callback" : `${window.location.origin}/api/auth/x/callback`;
+  const [callback,setCallback]=useState("https://your-domain.com/api/x/oauth/callback");
+  useEffect(() => { setCallback(`${window.location.origin}/api/x/oauth/callback`); }, []);
   const disconnect=async()=>{const response=await fetch("/api/x/disconnect",{method:"POST",headers:{"X-CSRF-Token":csrf}});if(response.ok){onDisconnected();setMessage("X disconnected and stored tokens deleted.")}};
   const deleteAll=async()=>{if(!window.confirm("Delete every local draft, schedule, metric, feedback item, cached X post and OAuth token? This cannot be undone."))return;const response=await fetch("/api/data/delete",{method:"DELETE",headers:{"X-CSRF-Token":csrf}});if(response.ok){onDisconnected();setMessage("All local application data was deleted. Refreshing…");setTimeout(()=>window.location.reload(),700)}else setMessage("Deletion failed.")};
   const importData=async(file:File)=>{try{const payload=JSON.parse(await file.text());const response=await fetch("/api/data/import",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(payload)});const failure=response.ok?undefined:await response.json() as {error?:string};setMessage(response.ok?"Import completed. Refresh to see the data.":`Import failed: ${failure?.error??"unknown error"}`)}catch{setMessage("Invalid JSON export.")}};

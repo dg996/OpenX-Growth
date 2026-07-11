@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appConfig } from "../../../../lib/config";
 import { consumeUsage } from "../../../../lib/data";
-import { getXSession, hasAppAccess, requireCsrf, setXSession } from "../../../../lib/security";
+import { getXSession, hasAppAccess, configuredInstanceResponse, requireCsrf, setXSession } from "../../../../lib/security";
 import { loadXSession, storeXSession } from "../../../../lib/session-store";
 import { refreshXAccessToken } from "../../../../lib/x-oauth";
 
 export async function POST(request:NextRequest) {
+  const blocked=configuredInstanceResponse(); if(blocked)return blocked;
   if (!await hasAppAccess(request)) return NextResponse.json({error:"UNAUTHORIZED"},{status:401});
   try { requireCsrf(request); } catch { return NextResponse.json({error:"INVALID_CSRF"},{status:403}); }
   let session = await getXSession(request) ?? await loadXSession();

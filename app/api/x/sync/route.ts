@@ -3,7 +3,7 @@ import { getDb } from "../../../../db";
 import { analyticsSnapshots } from "../../../../db/schema";
 import { appConfig } from "../../../../lib/config";
 import { consumeUsage, getUsage, readCache, writeCache } from "../../../../lib/data";
-import { getXSession, hasAppAccess, setXSession } from "../../../../lib/security";
+import { getXSession, hasAppAccess, configuredInstanceResponse, setXSession } from "../../../../lib/security";
 import { loadXSession, storeXSession } from "../../../../lib/session-store";
 import { generateIdeas, rankReplyOpportunities, type XPost, type XUser } from "../../../../lib/x-growth";
 import { refreshXAccessToken } from "../../../../lib/x-oauth";
@@ -16,6 +16,7 @@ const xFetch = async <T>(path:string,token:string):Promise<{ok:boolean;status:nu
 };
 
 export async function GET(request:NextRequest) {
+  const blocked=configuredInstanceResponse(); if(blocked)return blocked;
   if (!await hasAppAccess(request)) return NextResponse.json({error:"UNAUTHORIZED"},{status:401});
   const cached = request.nextUrl.searchParams.get("force") !== "1" ? await readCache<SyncPayload>("x-growth-sync") : null;
   if (cached) return NextResponse.json({...cached,cached:true});

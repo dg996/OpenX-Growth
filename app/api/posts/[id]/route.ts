@@ -2,9 +2,10 @@ import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "../../../../db";
 import { posts } from "../../../../db/schema";
-import { hasApiAuth, hasAppAccess, requireCsrf } from "../../../../lib/security";
+import { hasApiAuth, hasAppAccess, configuredInstanceResponse, requireCsrf } from "../../../../lib/security";
 
 export async function PATCH(request:NextRequest,{params}:{params:Promise<{id:string}>}) {
+  const blocked=configuredInstanceResponse(); if(blocked)return blocked;
   const api=hasApiAuth(request); if (!await hasAppAccess(request)&&!api) return NextResponse.json({error:"UNAUTHORIZED"},{status:401});
   if(!api) try{requireCsrf(request)}catch{return NextResponse.json({error:"INVALID_CSRF"},{status:403})}
   const {id}=await params; const current=await getDb().select().from(posts).where(eq(posts.id,id)).get(); if(!current)return NextResponse.json({error:"NOT_FOUND"},{status:404});
@@ -15,6 +16,7 @@ export async function PATCH(request:NextRequest,{params}:{params:Promise<{id:str
 }
 
 export async function DELETE(request:NextRequest,{params}:{params:Promise<{id:string}>}) {
+  const blocked=configuredInstanceResponse(); if(blocked)return blocked;
   const api=hasApiAuth(request); if(!await hasAppAccess(request)&&!api)return NextResponse.json({error:"UNAUTHORIZED"},{status:401});
   if(!api)try{requireCsrf(request)}catch{return NextResponse.json({error:"INVALID_CSRF"},{status:403})}
   const {id}=await params; await getDb().delete(posts).where(eq(posts.id,id)); return NextResponse.json({ok:true});
