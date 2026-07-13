@@ -65,6 +65,11 @@
     "vite": "8.0.13",
     "wrangler": "4.92.0"
   },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.19"
+    }
+  },
   "type": "module",
   "displayName": "OpenX Growth"
 }
