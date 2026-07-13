@@ -39,10 +39,60 @@ export function instanceConfigured() {
 
 export type DeploymentPosture="demo"|"misconfigured"|"protected";
 
+export type XConfigurationSummary={
+  xClientIdConfigured:boolean;
+  xClientSecretConfigured:boolean;
+  sessionSecretConfigured:boolean;
+  appUrlConfigured:boolean;
+  appAccessTokenConfigured:boolean;
+  cronSecretConfigured:boolean;
+  apiTokenConfigured:boolean;
+};
+
+export type AiConfigurationSummary={
+  provider:"OpenRouter"|"OpenAI"|"Custom OpenAI-compatible";
+  model:string;
+  apiKeyConfigured:boolean;
+  contentApproved:boolean;
+  repliesApproved:boolean;
+};
+
 export function deploymentPosture():DeploymentPosture {
   const config=appConfig();
   if(config.appAccessToken)return "protected";
   return instanceConfigured()?"misconfigured":"demo";
+}
+
+export function aiProviderLabel(baseUrl:string):AiConfigurationSummary["provider"] {
+  try {
+    const hostname=new URL(baseUrl).hostname.toLowerCase();
+    if(hostname==="openrouter.ai"||hostname.endsWith(".openrouter.ai"))return "OpenRouter";
+    if(hostname==="openai.com"||hostname.endsWith(".openai.com"))return "OpenAI";
+  } catch {}
+  return "Custom OpenAI-compatible";
+}
+
+export function protectedConfigSummary():{xConfiguration?:XConfigurationSummary;aiConfiguration?:AiConfigurationSummary} {
+  if(deploymentPosture()!=="protected")return {};
+  const config=appConfig();
+  return {
+    xConfiguration:{
+      xClientIdConfigured:Boolean(config.xClientId),
+      xClientSecretConfigured:Boolean(config.xClientSecret),
+      sessionSecretConfigured:Boolean(config.sessionSecret),
+      appUrlConfigured:Boolean(config.appUrl),
+      appAccessTokenConfigured:Boolean(config.appAccessToken),
+      cronSecretConfigured:Boolean(config.cronSecret),
+      apiTokenConfigured:Boolean(config.apiToken),
+    },
+    aiConfiguration:{
+      provider:aiProviderLabel(config.aiBaseUrl),
+      model:config.aiModel,
+      apiKeyConfigured:Boolean(config.aiApiKey),
+      contentApproved:config.xAiContentApproved,
+      repliesApproved:config.xAiRepliesApproved,
+    },
+  };
 }
 
 export function publicConfig() {

@@ -113,3 +113,35 @@ test("Next resolves a fixed PostCSS without force or a new direct dependency",()
   assert.equal("postcss" in packageJson.dependencies,false);
   assert.deepEqual(packageJson.overrides?.next,{postcss:"8.5.19"});
 });
+
+test("AI provider labels recognize only public OpenAI and OpenRouter hosts",async()=>{
+  const {aiProviderLabel}=await import("../lib/config.ts");
+  assert.equal(aiProviderLabel("https://api.openrouter.ai/v1"),"OpenRouter");
+  assert.equal(aiProviderLabel("https://api.openai.com/v1"),"OpenAI");
+  assert.equal(aiProviderLabel("https://api.openai.com.evil.example/v1"),"Custom OpenAI-compatible");
+  assert.equal(aiProviderLabel("https://private-provider.example/v1"),"Custom OpenAI-compatible");
+  assert.equal(aiProviderLabel("not a url"),"Custom OpenAI-compatible");
+});
+
+test("protected runtime configuration serializes labels and booleans without secret values",async()=>{
+  process.env.X_CLIENT_ID="fixture-client-id-secret";
+  process.env.X_CLIENT_SECRET="fixture-client-secret";
+  process.env.SESSION_SECRET="fixture-session-secret-with-more-than-thirty-two-characters";
+  process.env.APP_ACCESS_TOKEN="fixture-app-access-secret";
+  process.env.APP_URL="https://fixture-instance.example";
+  process.env.AI_BASE_URL="https://openrouter.ai/api/v1";
+  process.env.AI_API_KEY="fixture-ai-key-secret";
+  process.env.AI_MODEL="openai/gpt-5.6-luna";
+  process.env.X_AI_CONTENT_APPROVED="true";
+  process.env.X_AI_REPLIES_APPROVED="false";
+  const {protectedConfigSummary}=await import("../lib/config.ts");
+  const serialized=JSON.stringify(protectedConfigSummary());
+  assert.deepEqual(protectedConfigSummary().aiConfiguration,{
+    provider:"OpenRouter",
+    model:"openai/gpt-5.6-luna",
+    apiKeyConfigured:true,
+    contentApproved:true,
+    repliesApproved:false,
+  });
+  for(const secret of [process.env.X_CLIENT_ID,process.env.X_CLIENT_SECRET,process.env.SESSION_SECRET,process.env.APP_ACCESS_TOKEN,process.env.AI_BASE_URL,process.env.AI_API_KEY])assert.ok(secret&&!serialized.includes(secret));
+});

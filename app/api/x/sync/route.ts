@@ -7,7 +7,7 @@ import { getUsage, readCache, writeCache } from "../../../../lib/data";
 import { chunkForD1Insert } from "../../../../lib/d1";
 import { authorizeBrowserOrApiRead, configuredInstanceResponse, getXSession, setXSession } from "../../../../lib/security";
 import { loadXSession, storeXSession } from "../../../../lib/session-store";
-import { generateIdeas, rankReplyOpportunities, type RankingFeedback, type XPost, type XUser } from "../../../../lib/x-growth";
+import { filterNetworkPosts, generateIdeas, rankReplyOpportunities, type RankingFeedback, type XPost, type XUser } from "../../../../lib/x-growth";
 import { refreshXAccessToken } from "../../../../lib/x-oauth";
 import { getXTransport } from "../../../../lib/x-transport";
 import { syncPageSize } from "../../../../lib/usage-policy";
@@ -46,7 +46,7 @@ export async function GET(request:NextRequest) {
       transport.request<{data?:XPost[]}>({path:`/2/users/${me.data.data.id}/tweets?max_results=${maxResults}&tweet.fields=created_at,public_metrics`,accessToken:session.accessToken,accounting:{kind:"read",endpoint:"users.posts",reservedResources:maxResults,resourceCount:(data)=>((data as {data?:unknown[]}|undefined)?.data?.length??0)}}),
     ]);
     if (!timeline.ok || !own.ok) throw new Error(`X_API_${timeline.status}_${own.status}`);
-    const feed = timeline.data?.data ?? [];
+    const feed = filterNetworkPosts(timeline.data?.data ?? [],me.data.data.id);
     const ownPosts = own.data?.data ?? [];
     const now = Date.now();
     const followerCount=me.data.data.public_metrics?.followers_count;

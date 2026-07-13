@@ -77,16 +77,24 @@ export type IdeaSignal = {
   featureExplanation?:IdeaFeatures;
 };
 
-const EN_STOPWORDS=["a","about","after","again","also","and","are","been","being","but","could","did","do","does","even","for","from","good","have","here","how","into","its","just","know","like","make","more","most","much","need","only","or","our","over","people","really","should","some","still","than","that","the","their","there","these","they","thing","things","this","through","time","today","using","very","want","was","well","what","when","where","which","while","who","will","with","work","would","you","your","you're"];
-const IT_STOPWORDS=["a","ad","al","alla","anche","che","chi","ci","come","con","da","dal","dalla","dei","del","della","di","e","è","gli","ha","hai","hanno","ho","i","il","in","io","la","le","lo","loro","ma","mi","nel","nella","non","o","per","perché","più","quale","questa","questo","se","si","sono","su","tra","tu","un","una","uno"];
+const EN_STOPWORDS=["a","about","after","again","all","also","am","an","and","are","as","at","be","been","being","build","building","built","but","by","can","could","did","do","does","even","for","from","get","good","got","has","have","he","her","here","him","his","how","i","if","in","into","is","it","its","just","know","like","made","make","me","more","most","much","my","need","new","no","not","now","of","on","one","only","or","our","over","people","post","really","rt","should","so","some","still","than","that","the","their","them","then","there","these","they","thing","things","this","thread","through","time","to","today","too","up","us","use","used","uses","using","very","want","was","we","well","what","when","where","which","while","who","will","with","without","work","would","you","your","you're"];
+const IT_STOPWORDS=["a","ad","ai","al","agli","alla","alle","allo","anche","che","chi","ci","come","con","da","dai","dal","dalla","dalle","dei","del","della","delle","dello","di","e","ed","è","era","essere","gli","ha","hai","hanno","ho","i","il","in","io","la","le","lo","loro","ma","mi","nei","nel","nella","nelle","noi","non","nuova","nuovo","o","per","perché","più","post","quale","questa","questo","se","senza","si","sono","sta","stato","su","sua","sue","suo","suoi","ti","tra","tu","un","una","uno","usa","usare","uso","vi","voi"];
 const STOPWORDS=new Set([...EN_STOPWORDS,...IT_STOPWORDS,"http","https","x","com"]);
+const ACRONYM_LABELS=new Map([["ai","AI"],["api","API"],["d1","D1"],["llm","LLM"],["mcp","MCP"],["saas","SaaS"]]);
 
 const clamp=(value:number,minimum:number,maximum:number)=>Math.min(maximum,Math.max(minimum,value));
 const compactNumber = (value: number) => value >= 1_000_000 ? `${(value/1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value/1_000)}K` : `${value}`;
-const normalize=(value:string)=>value.normalize("NFKC").toLocaleLowerCase("it").replace(/https?:\/\/\S+/gu," ").replace(/[’']/gu," ");
-
 export function tokenizeText(value:string) {
-  return (normalize(value).match(/[\p{L}\p{M}\p{N}]+(?:-[\p{L}\p{M}\p{N}]+)*/gu)??[]).filter((token)=>token.length>1&&!STOPWORDS.has(token));
+  const rawTokens=value.normalize("NFKC").replace(/https?:\/\/\S+/gu," ").replace(/[’']/gu," ").match(/[\p{L}\p{M}\p{N}]+(?:-[\p{L}\p{M}\p{N}]+)*/gu)??[];
+  return rawTokens.flatMap((raw)=>{
+    const token=raw.toLocaleLowerCase("it");
+    const recognizedAcronym=raw.length>1&&raw===raw.toLocaleUpperCase("it")&&ACRONYM_LABELS.has(token);
+    return token.length>1&&(!STOPWORDS.has(token)||recognizedAcronym)?[token]:[];
+  });
+}
+
+export function filterNetworkPosts(posts:XPost[],connectedAccountId:string) {
+  return posts.filter((post)=>post.author_id!==connectedAccountId);
 }
 
 function phraseCounts(texts:string[]) {
@@ -220,7 +228,7 @@ export function rankReplyOpportunities(posts:XPost[],users:XUser[],options?:Rank
   return selected.map((candidate)=>Object.fromEntries(Object.entries(candidate).filter(([key])=>key!=="_tokens")) as ReplyOpportunity);
 }
 
-const title=(value:string)=>value.charAt(0).toLocaleUpperCase("it")+value.slice(1);
+const title=(value:string)=>value.split(" ").map((token,index)=>ACRONYM_LABELS.get(token)??(index===0?token.charAt(0).toLocaleUpperCase("it")+token.slice(1):token)).join(" ");
 const pillarFor=(topic:string)=>["Industry insight","Build in public","Founder lesson"][[...topic].reduce((sum,char)=>sum+char.codePointAt(0)!,0)%3];
 
 export function generateIdeas(feedPosts:XPost[],ownPosts:XPost[],options?:RankingOptions|number):IdeaSignal[] {

@@ -24,3 +24,51 @@ test("posting-time UI never invents alternating suggested hours", () => {
   assert.match(page,/postingTimes\.sampleSize/);
   assert.match(page,/Insufficient data for posting-time recommendations/);
 });
+
+test("configured workspaces cannot fall back to demo fixtures or quantities", () => {
+  assert.match(page,/setContent\(status\?\.demoMode\?initialContent:/);
+  assert.match(page,/if\(status\.demoMode\)\{setOpportunityData\(opportunities\);setSignalData\(signals\)\}/);
+  assert.match(page,/:dataSource==="demo"\?metricData:\[\]/);
+  assert.doesNotMatch(page,/setDataSource/);
+  assert.match(page,/WorkspaceStatePanel state=\{workspaceState\}/);
+  assert.doesNotMatch(page,/dataSource === "live" && account \?/);
+  assert.match(page,/dataSource === "live" \? <>/);
+});
+
+test("sync failures remain visible without hiding stored content and analytics", () => {
+  assert.match(page,/isWorkspaceBlocking\(workspaceState\)/);
+  assert.match(page,/WorkspaceSyncNotice state=\{workspaceState\}/);
+  assert.match(page,/syncErrorGuidance\(error\)/);
+});
+
+test("stored analytics enter UI state before the live sync can fail", () => {
+  const bootstrap=page.slice(page.indexOf("const [csrfResponse,postsResponse,analyticsPayload]"),page.indexOf("const loadPosts="));
+  const storeAnalytics=bootstrap.indexOf("if(analyticsPayload)setAnalytics(analyticsPayload)");
+  const startLiveSync=bootstrap.indexOf("if(status.connected)");
+  assert.ok(storeAnalytics>=0);
+  assert.ok(storeAnalytics<startLiveSync);
+});
+
+test("initial sync errors are surfaced with retry and sync completion uses lastSync", () => {
+  assert.match(page,/catch\(error\)\{setSyncError\(sanitizeSyncError/);
+  assert.match(page,/onRetry=\{\(\)=>void syncFromX\(true\)\}/);
+  assert.match(page,/synced=\{Boolean\(lastSync\)\}/);
+  assert.match(page,/className=\{synced\?"done":""\}>Discover → Sync from X/);
+});
+
+test("Settings separates authoritative runtime state from a collapsed setup reference", () => {
+  const settings=page.slice(page.indexOf("function SettingsView"),page.indexOf("function ConfigurationLine"));
+  const currentSummary=settings.slice(0,settings.indexOf("setup-reference-toggle"));
+  const setupReference=settings.slice(settings.indexOf("setup-reference-toggle"));
+  assert.match(settings,/CURRENT CONFIGURATION/);
+  assert.match(settings,/Provider/);
+  assert.match(settings,/Model/);
+  assert.match(settings,/API key/);
+  assert.match(settings,/AI content/);
+  assert.match(settings,/AI replies/);
+  assert.match(settings,/aria-expanded=\{setupReferenceOpen\}/);
+  assert.match(settings,/SETUP REFERENCE/);
+  assert.match(page,/Schema: \{required \? "required" : "optional"\}/);
+  assert.doesNotMatch(currentSummary,/AI_MODEL=gpt-4o-mini|AI_BASE_URL=https:\/\/api\.openai\.com/);
+  assert.match(setupReference,/AI_MODEL=gpt-4o-mini/);
+});

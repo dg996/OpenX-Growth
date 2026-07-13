@@ -90,6 +90,31 @@ test("posting-time suggestions require the documented sample threshold", () => {
   assert.deepEqual(result.postingTimes.suggestions,[]);
 });
 
+test("rates and posting-time samples exclude snapshots without measured impressions", () => {
+  const posts=[
+    {id:"measured",text:"Measured post",xPostId:"x-measured",publishedAt:NOW-DAY,topic:"AI",format:"post",hook:null},
+    {id:"unmeasured",text:"Unmeasured post",xPostId:"x-unmeasured",publishedAt:NOW-2*DAY,topic:"AI",format:"post",hook:null},
+  ];
+  const result=buildAnalyticsView({
+    now:NOW,
+    range:"28D",
+    posts,
+    snapshots:[
+      {postId:"x-measured",recordedAt:NOW,impressions:100,likes:10,replies:0,reposts:0},
+      {postId:"x-unmeasured",recordedAt:NOW,impressions:0,likes:1_000,replies:0,reposts:0},
+    ],
+    followerSnapshots:[],
+  });
+
+  assert.equal(result.derived.totals.engagements.value,1_010);
+  assert.equal(result.derived.totals.engagementRate.value,0.1);
+  assert.equal(result.derived.series.at(-1)?.engagementRate.value,0.1);
+  assert.equal(result.derived.byTopic[0]?.medianEngagementRate.value,0.1);
+  assert.equal(result.postingTimes.sampleSize,1);
+  assert.equal(result.postingTimes.status,"insufficient_data");
+  assert.match(result.postingTimes.method,/measured impressions/);
+});
+
 test("posting-time ranking uses median engagement rate instead of impression totals", () => {
   const posts=Array.from({length:MIN_POSTING_TIME_SAMPLES},(_,index)=>({
     id:`post-${index}`,

@@ -22,6 +22,8 @@ test("demo instance exposes public status without login", async () => {
   assert.equal(body.demoMode, true);
   assert.equal(body.accessProtected, false);
   assert.equal(body.connected, false);
+  assert.equal("xConfiguration" in body,false);
+  assert.equal("aiConfiguration" in body,false);
 });
 
 test("dashboard HTML renders", async () => {

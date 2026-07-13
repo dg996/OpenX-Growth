@@ -175,6 +175,24 @@ test("configured instance blocks AI until provider and policy flags are set", as
   assert.equal(ai.body.error, "AI_NOT_CONFIGURED");
 });
 
+test("protected status reports sanitized current X and AI configuration", async () => {
+  const {cookies}=await authenticatedSession();
+  const status=await api("/api/x/status",{headers:{cookie:cookies}});
+  assert.equal(status.response.status,200);
+  assert.equal(status.body.xConfiguration.xClientIdConfigured,true);
+  assert.equal(status.body.xConfiguration.sessionSecretConfigured,true);
+  assert.equal(status.body.xConfiguration.appAccessTokenConfigured,true);
+  assert.deepEqual(status.body.aiConfiguration,{
+    provider:"OpenAI",
+    model:"gpt-5-mini",
+    apiKeyConfigured:false,
+    contentApproved:false,
+    repliesApproved:false,
+  });
+  const serialized=JSON.stringify(status.body);
+  assert.doesNotMatch(serialized,/https:\/\/api\.openai\.com\/v1|e2e-app-access-token|e2e-session-secret/);
+});
+
 test("configured instance syncs only through the injected X fixture and persists follower provenance", async () => {
   const {cookies,token}=await authenticatedSession();
   const sync = await api("/api/x/sync?force=1",{headers:{cookie:cookies}});
@@ -182,6 +200,7 @@ test("configured instance syncs only through the injected X fixture and persists
   assert.equal(sync.body.source,"live");
   assert.equal(sync.body.account.username,"fixture_owner");
   assert.equal(sync.body.account.followersCount,125);
+  assert.ok(sync.body.opportunities.every((row)=>row.id!=="feed-owner"));
   assert.ok(sync.body.opportunities.every((row)=>["live","estimate"].includes(row.reachProvenance.source)));
   assert.ok(sync.body.ideas.every((row)=>row.bars===undefined&&row.scoreProvenance.source==="derived"));
   assert.ok(sync.body.opportunities.every((row)=>row.algorithmVersion&&row.featureExplanation));
@@ -193,6 +212,14 @@ test("configured instance syncs only through the injected X fixture and persists
   const analytics=await api("/api/analytics?range=7D",{headers:{cookie:cookies}});
   assert.equal(analytics.body.followers.series.at(-1).followers.value,125);
   assert.equal(analytics.body.followers.series.at(-1).followers.provenance.source,"live");
+});
+
+test("configured sync failures expose only an allowlisted retryable code", async () => {
+  const {cookies}=await authenticatedSession();
+  const sync=await api("/api/x/sync?force=1",{headers:{cookie:cookies,"x-openx-e2e-sync-status":"503"}});
+  assert.equal(sync.response.status,502);
+  assert.equal(sync.body.error,"X_API_503");
+  assert.doesNotMatch(JSON.stringify(sync.body),/FIXTURE_SYNC_FAILURE|fixture-access-token/);
 });
 
 test("concurrent sync and write attempts cannot cross local resource or write caps", async () => {

@@ -27,7 +27,9 @@ export const MIN_POSTING_TIME_SAMPLES=8;
 const RANGE_DAYS:Record<AnalyticsRange,number>={"7D":7,"28D":28,"90D":90,"1Y":365};
 const metric=<T>(value:T,source:ProvenanceSource,recordedAt:number):Metric<T>=>({value,provenance:{source,recordedAt}});
 const engagement=(snapshot:SnapshotMetrics)=>snapshot.likes+snapshot.replies+snapshot.reposts;
-const engagementRate=(snapshot:SnapshotMetrics)=>engagement(snapshot)/Math.max(1,snapshot.impressions);
+const hasMeasuredImpressions=(snapshot:SnapshotMetrics)=>snapshot.impressions>0;
+const engagementRate=(snapshot:SnapshotMetrics)=>hasMeasuredImpressions(snapshot)?engagement(snapshot)/snapshot.impressions:0;
+const comparableEngagements=(snapshots:Iterable<SnapshotMetrics>)=>[...snapshots].reduce((sum,snapshot)=>sum+(hasMeasuredImpressions(snapshot)?engagement(snapshot):0),0);
 const median=(values:number[])=>{
   if(!values.length)return 0;
   const sorted=[...values].sort((a,b)=>a-b),middle=Math.floor(sorted.length/2);
@@ -65,15 +67,17 @@ export function buildAnalyticsView(input:{
   const observedAt=Math.max(0,...snapshots.map((row)=>row.recordedAt),...followerSnapshots.map((row)=>row.recordedAt));
   const {latest,totals}=summarizeLatestSnapshots(snapshots);
   const totalEngagements=totals.likes+totals.replies+totals.reposts;
+  const measuredEngagements=comparableEngagements(latest.values());
 
   const series=[...new Set(snapshots.map((row)=>row.recordedAt))].map((recordedAt)=>{
-    const point=summarizeLatestSnapshots(snapshots.filter((row)=>row.recordedAt<=recordedAt)).totals;
+    const {latest:pointLatest,totals:point}=summarizeLatestSnapshots(snapshots.filter((row)=>row.recordedAt<=recordedAt));
     const pointEngagements=point.likes+point.replies+point.reposts;
+    const pointMeasuredEngagements=comparableEngagements(pointLatest.values());
     return {
       recordedAt,
       impressions:metric(point.impressions,"derived",recordedAt),
       engagements:metric(pointEngagements,"derived",recordedAt),
-      engagementRate:metric(pointEngagements/Math.max(1,point.impressions),"derived",recordedAt),
+      engagementRate:metric(pointMeasuredEngagements/Math.max(1,point.impressions),"derived",recordedAt),
     };
   });
 
@@ -87,7 +91,7 @@ export function buildAnalyticsView(input:{
     item.posts++;
     item.impressions+=row.snapshot.impressions;
     item.engagements+=engagement(row.snapshot);
-    item.rates.push(engagementRate(row.snapshot));
+    if(hasMeasuredImpressions(row.snapshot))item.rates.push(engagementRate(row.snapshot));
     item.recordedAt=Math.max(item.recordedAt,row.snapshot.recordedAt);
     return map;
   },{})).map(({rates,recordedAt,...row})=>({
@@ -96,7 +100,8 @@ export function buildAnalyticsView(input:{
     provenance:{source:"derived" as const,recordedAt},
   })).sort((a,b)=>b.medianEngagementRate.value-a.medianEngagementRate.value||b.posts-a.posts||a.label.localeCompare(b.label));
 
-  const hourGroups=linked.reduce<Map<number,Array<{snapshot:SnapshotMetrics}>>>((map,row)=>{
+  const comparableLinked=linked.filter((row)=>hasMeasuredImpressions(row.snapshot));
+  const hourGroups=comparableLinked.reduce<Map<number,Array<{snapshot:SnapshotMetrics}>>>((map,row)=>{
     const hour=new Date(row.post.publishedAt!).getUTCHours();
     const values=map.get(hour)??[];
     values.push({snapshot:row.snapshot});
@@ -128,7 +133,7 @@ export function buildAnalyticsView(input:{
         replies:metric(totals.replies,"derived",observedAt||input.now),
         reposts:metric(totals.reposts,"derived",observedAt||input.now),
         engagements:metric(totalEngagements,"derived",observedAt||input.now),
-        engagementRate:metric(totalEngagements/Math.max(1,totals.impressions),"derived",observedAt||input.now),
+        engagementRate:metric(measuredEngagements/Math.max(1,totals.impressions),"derived",observedAt||input.now),
       },
       series,
       byTopic:group((post)=>post.topic??"Uncategorized"),
@@ -142,11 +147,11 @@ export function buildAnalyticsView(input:{
       series:followerSnapshots.map((row)=>({recordedAt:row.recordedAt,followers:metric(row.followers,"live",row.recordedAt)})),
     },
     postingTimes:{
-      status:linked.length>=MIN_POSTING_TIME_SAMPLES?"ready" as const:"insufficient_data" as const,
+      status:comparableLinked.length>=MIN_POSTING_TIME_SAMPLES?"ready" as const:"insufficient_data" as const,
       minimumSamples:MIN_POSTING_TIME_SAMPLES,
-      sampleSize:linked.length,
-      method:"median engagement rate by UTC hour; minimum two posts per suggested hour",
-      suggestions:linked.length>=MIN_POSTING_TIME_SAMPLES?postingSuggestions:[],
+      sampleSize:comparableLinked.length,
+      method:"median engagement rate by UTC hour for posts with measured impressions; minimum two posts per suggested hour",
+      suggestions:comparableLinked.length>=MIN_POSTING_TIME_SAMPLES?postingSuggestions:[],
     },
   };
 }

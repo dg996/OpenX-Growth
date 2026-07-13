@@ -5,11 +5,13 @@ const ok=<T>(data:T):XTransportResult<T>=>({ok:true,status:200,data,rateLimit:{l
 
 let publishedCounter=0;
 
-function fixtureTransport(providerStatus:number|undefined):XTransport{return {
+function fixtureTransport(providerStatus:number|undefined,syncStatus:number|undefined):XTransport{return {
   async request<T>(input:XTransportRequest):Promise<XTransportResult<T>> {
+    if(syncStatus&&input.path.startsWith("/2/users/me"))return {ok:false,status:syncStatus,data:{error:"FIXTURE_SYNC_FAILURE"} as T,rateLimit:{limit:100,remaining:98,resetAt:2_000_000_000}};
     if(input.path.startsWith("/2/users/me"))return ok({data:{id:"owner",name:"Fixture Owner",username:"fixture_owner",public_metrics:{followers_count:125}}}) as XTransportResult<T>;
     if(input.path.includes("/timelines/reverse_chronological"))return ok({
       data:[
+        {id:"feed-owner",author_id:"owner",text:"Owner-only private product vocabulary",created_at:"2026-07-13T08:30:00.000Z",public_metrics:{like_count:2,retweet_count:0,reply_count:0,impression_count:50}},
         {id:"feed-1",author_id:"u1",text:"Agentic product evaluation in Italian teams",created_at:"2026-07-13T08:00:00.000Z",public_metrics:{like_count:20,retweet_count:2,reply_count:3,impression_count:500}},
         {id:"feed-2",author_id:"u2",text:"Open source distribution per startup europee",created_at:"2026-07-13T07:00:00.000Z",public_metrics:{like_count:15,retweet_count:1,reply_count:2,impression_count:300}},
       ],
@@ -35,11 +37,13 @@ const e2eWorker={
     const fault=request.headers.get("x-openx-e2e-publish-fault")??undefined;
     const rawNow=request.headers.get("x-openx-e2e-publish-now");
     const rawStatus=request.headers.get("x-openx-e2e-provider-status");
+    const rawSyncStatus=request.headers.get("x-openx-e2e-sync-status");
     const publishNow=rawNow===null?undefined:Number(rawNow);
     const providerStatus=rawStatus===null?undefined:Number(rawStatus);
+    const syncStatus=rawSyncStatus===null?undefined:Number(rawSyncStatus);
     const injected=env.OPENX_E2E_X_FIXTURE==="sync"?{
       ...env,
-      X_TRANSPORT:fixtureTransport(Number.isFinite(providerStatus)?providerStatus:undefined),
+      X_TRANSPORT:fixtureTransport(Number.isFinite(providerStatus)?providerStatus:undefined,Number.isFinite(syncStatus)?syncStatus:undefined),
       ...(fault?{PUBLISH_FAULT:fault}:{}),
       ...(Number.isFinite(publishNow)?{PUBLISH_NOW:publishNow}:{}),
     }:env;
