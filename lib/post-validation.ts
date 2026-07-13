@@ -146,7 +146,7 @@ export function importPayloadSchema(now=Date.now()) {
 export const replyInputSchema=z.object({postId:z.string().trim().min(1).max(100),text:partSchema,generated:z.boolean().default(false)}).strict();
 
 const publishActionSchema=z.object({action:z.literal("publish").default("publish")}).strict();
-const reconcileAcceptedSchema=z.object({action:z.literal("reconcile"),resolution:z.literal("accepted"),xPostIds:z.array(z.string().trim().min(1).max(100)).min(1).max(MAX_THREAD_PARTS)}).strict();
+const reconcileAcceptedSchema=z.object({action:z.literal("reconcile"),resolution:z.literal("accepted"),xPostIds:z.array(z.string().trim().min(1).max(100)).min(1).max(MAX_THREAD_PARTS).refine((ids)=>new Set(ids).size===ids.length,{message:"X post IDs must be unique"})}).strict();
 const reconcileRejectedSchema=z.object({action:z.literal("reconcile"),resolution:z.literal("not_accepted")}).strict();
 export const publishCommandSchema=z.union([publishActionSchema,reconcileAcceptedSchema,reconcileRejectedSchema]);
 

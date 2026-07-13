@@ -148,16 +148,52 @@ test("manual not-accepted reconciliation makes only the ambiguous part retryable
   assert.equal(JSON.parse((await stored(post.id)).publishReceiptsJson).length,2);
 });
 
-test("definitive provider failure is safely retryable",async()=>{
+test("accepted reconciliation cannot replace already confirmed thread receipts",async()=>{
+  const post=await create(["confirmed receipt","ambiguous tail"]);
+  await publish(post.id,{fault:"after_part:0",now:BASE_TIME+2_500_000});
+  await publish(post.id,{fault:"after_remote_acceptance",now:BASE_TIME+2_500_000+LEASE_MS+1});
+  await publish(post.id,{now:BASE_TIME+2_500_000+2*LEASE_MS+2});
+  const review=await stored(post.id);
+  assert.equal(review.status,"needs_review");
+  const confirmedId=JSON.parse(review.publishReceiptsJson)[0].xPostId;
+
+  const mismatched=await publish(post.id,{body:{action:"reconcile",resolution:"accepted",xPostIds:["replacement-id","manual-tail"]},now:BASE_TIME+2_700_000});
+  assert.equal(mismatched.response.status,409,JSON.stringify(mismatched.body));
+  assert.equal(mismatched.body.error,"RECONCILIATION_RECEIPT_MISMATCH");
+  assert.equal((await stored(post.id)).status,"needs_review");
+
+  const accepted=await publish(post.id,{body:{action:"reconcile",resolution:"accepted",xPostIds:[confirmedId,"manual-tail"]},now:BASE_TIME+2_700_001});
+  assert.equal(accepted.response.status,200,JSON.stringify(accepted.body));
+  assert.equal((await stored(post.id)).status,"published");
+});
+
+test("definitive provider rejection is safely retryable",async()=>{
   const post=await create(["provider rejection"]);
-  const failed=await publish(post.id,{providerStatus:503,now:BASE_TIME+3_000_000});
+  const failed=await publish(post.id,{providerStatus:400,now:BASE_TIME+3_000_000});
   assert.equal(failed.response.status,502);
   const storedFailure=await stored(post.id);
   assert.equal(storedFailure.status,"failed");
-  assert.equal(storedFailure.lastError,"X_PUBLISH_503");
+  assert.equal(storedFailure.lastError,"X_PUBLISH_400");
   assert.equal(storedFailure.deliveryState,"idle");
   const retried=await publish(post.id,{now:BASE_TIME+3_000_001});
   assert.equal(retried.response.status,200,JSON.stringify(retried.body));
+});
+
+test("provider 5xx acceptance is ambiguous and never retried automatically",async()=>{
+  const post=await create(["ambiguous provider failure"]);
+  const writesBefore=await writes();
+  const failed=await publish(post.id,{providerStatus:503,now:BASE_TIME+3_100_000});
+  assert.equal(failed.response.status,409,JSON.stringify(failed.body));
+  assert.equal(failed.body.error,"PUBLISH_NEEDS_REVIEW");
+  const ambiguous=await stored(post.id);
+  assert.equal(ambiguous.status,"needs_review");
+  assert.equal(ambiguous.deliveryState,"ambiguous");
+  assert.equal(await writes(),writesBefore+1);
+
+  const stopped=await publish(post.id,{now:BASE_TIME+3_100_001});
+  assert.equal(stopped.response.status,409);
+  assert.equal(stopped.body.error,"PUBLISH_NEEDS_REVIEW");
+  assert.equal(await writes(),writesBefore+1);
 });
 
 test("HTTP create, patch, import, and publish boundaries reject inconsistent input",async()=>{

@@ -15,6 +15,7 @@ test("active claims cannot be stolen and safe expired claims can resume",()=>{
 });
 
 test("an expired claim with possible remote acceptance requires review",()=>{
+  assert.equal(classifyPublishClaim({status:"needs_review",claimExpiresAt:null,deliveryState:"ambiguous"},NOW),"needs_review");
   for(const deliveryState of ["sending","accepted","ambiguous"] as const){
     assert.equal(classifyPublishClaim({status:"publishing",claimExpiresAt:NOW-1,deliveryState},NOW),"needs_review");
   }

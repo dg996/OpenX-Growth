@@ -76,6 +76,7 @@ test("reply and publish commands are strict and bounded",()=>{
   assert.equal(publishCommandSchema.safeParse({action:"reconcile",resolution:"not_accepted"}).success,true);
   for(const input of [
     {action:"reconcile",resolution:"accepted"},
+    {action:"reconcile",resolution:"accepted",xPostIds:["duplicate","duplicate"]},
     {action:"reconcile",resolution:"not_accepted",xPostIds:["one"]},
     {action:"publish",xPostIds:["one"]},
     {action:"retry"},

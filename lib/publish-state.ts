@@ -27,6 +27,7 @@ export function classifyPublishClaim(
   record:{status:string;claimExpiresAt:number|null;deliveryState:DeliveryState},
   now:number,
 ):PublishClaimState {
+  if(record.status==="needs_review")return "needs_review";
   if(record.status!=="publishing")return "available";
   if(record.claimExpiresAt!==null&&record.claimExpiresAt>now)return "active";
   if(record.claimExpiresAt===null)return "needs_review";

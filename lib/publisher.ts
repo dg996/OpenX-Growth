@@ -60,6 +60,7 @@ export async function reconcileStoredPost(record:PostRecord,command:{resolution:
   const priorReceipts=parsePublishReceipts(current.publishReceiptsJson);
   if(command.resolution==="accepted"){
     if(command.xPostIds.length!==content.parts.length)throw new Error("RECONCILIATION_ID_COUNT_MISMATCH");
+    if(priorReceipts.some((receipt,index)=>command.xPostIds[index]!==receipt.xPostId))throw new Error("RECONCILIATION_RECEIPT_MISMATCH");
     const receipts:PublishReceipt[]=command.xPostIds.map((xPostId,partIndex)=>({partIndex,xPostId,acceptedAt:now,confirmedAt:now}));
     const updated=await getDb().update(posts).set({status:"published",publishedAt:now,xPostId:command.xPostIds[0],publishedIdsJson:JSON.stringify(command.xPostIds),publishReceiptsJson:JSON.stringify(receipts),deliveryState:"confirmed",claimToken:null,claimExpiresAt:null,lastError:null,updatedAt:now}).where(and(eq(posts.id,record.id),eq(posts.status,"needs_review"))).returning().get();
     if(!updated)throw new Error("RECONCILIATION_CONFLICT");
@@ -127,6 +128,9 @@ export async function publishStoredPost(record:PostRecord,options:PublishOptions
         await recordEvent(record.id,"provider_response",clock(),{partIndex:index,providerStatus:response.status});
       }
       if(!response.ok){
+        // A timeout or provider-side failure may happen after X accepted the write.
+        // Keep the sending state so the catch path fails closed into needs_review.
+        if(response.status===408||response.status>=500)throw new Error(`X_PUBLISH_${response.status}`);
         await db.update(posts).set({deliveryState:safeState,updatedAt:clock()}).where(and(eq(posts.id,record.id),eq(posts.claimToken,claimToken)));
         throw new Error(`X_PUBLISH_${response.status}`);
       }
