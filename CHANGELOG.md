@@ -7,8 +7,9 @@ All notable changes will be documented here.
 ### Added
 
 - Fork-first X OAuth configuration and encrypted token storage.
+- Reply opportunities, content ideas and feedback signals.
+- Overview **Today's Growth Plan** from loaded ideas and reply opportunities, with deterministic draft seeding and optional user-initiated AI generation.
 - D1-backed drafts, threads, schedules, evergreen recycling and analytics.
-- Reply opportunities, content ideas and feedback controls.
 - Optional policy-gated AI provider.
 - Import/export, REST API and MCP server.
 - Light theme, notification center and setup guide.

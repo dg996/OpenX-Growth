@@ -22,6 +22,7 @@ OpenX Growth connects to the official X API, analyzes the accounts you follow an
 - OAuth 2.0 Authorization Code + PKCE with encrypted token storage.
 - Home-timeline-based reply opportunities with explicit ranking reasons.
 - Network-derived idea pillars, content-gap detection and feedback signals.
+- Overview **Today's Growth Plan** from already-loaded ideas and reply opportunities, with optional user-initiated AI draft generation.
 - Draft, single-post and thread editor.
 - Persistent D1 content queue and protected scheduled publisher.
 - Idempotent thread publishing with partial-progress recovery.
