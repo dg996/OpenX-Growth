@@ -80,7 +80,7 @@ type StoredPost={id:string;text:string;status:string;scheduledAt?:number;publish
 type PostsPayload={posts:StoredPost[]};
 type SyncPayload={account:AccountProfile;opportunities:ReplyOpportunity[];ideas:IdeaSignal[];syncedAt:string;error?:string};
 type AiPayload={content?:string|string[];error?:string;message?:string};
-type ComposerLaunch={text?:string;idea?:IdeaSignal;autoGenerate?:boolean};
+type ComposerLaunch={text?:string;idea?:IdeaSignal;seededParts?:string[];seedGenerated?:boolean;seedError?:string;aiLoading?:boolean};
 
 const postStatusLabel=(status:string):PostStatus=>status==="needs_review"?"Needs review":`${status.charAt(0).toUpperCase()}${status.slice(1)}` as PostStatus;
 
@@ -166,16 +166,12 @@ function DataSeriesChart({points,label}:{points:Array<{recordedAt:number;value:n
 }
 
 function Composer({ onClose, onSave, launch, csrf, evergreenEnabled, aiContentApproved }: { onClose: () => void; onSave: (post:SavePostInput) => Promise<boolean>; launch?: ComposerLaunch; csrf:string;evergreenEnabled:boolean;aiContentApproved:boolean }) {
-  const [parts,setParts] = useState([launch?.text || ""]); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(false); const [busy,setBusy]=useState(false); const [done,setDone]=useState(false); const [error,setError]=useState("");
+  const [parts,setParts] = useState(() => launch?.seededParts ?? [launch?.text || ""]); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(Boolean(launch?.seedGenerated)); const [busy,setBusy]=useState(Boolean(launch?.aiLoading)); const [done,setDone]=useState(false); const [error,setError]=useState(launch?.seedError ?? "");
   const updatePart=(index:number,value:string)=>setParts((current)=>current.map((part,position)=>position===index?value:part));
   const applyAiPayload=(payload:AiPayload,responseOk:boolean)=>{if(!responseOk||payload.content===undefined){setError(payload.message??userFacingAiError(payload.error));return}const content=payload.content;if(Array.isArray(content))setParts(content);else setParts([String(content)]);setGenerated(true)};
   const runAi=async(body:Record<string,string>)=>{setBusy(true);setError("");const response=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(body)});const payload=await response.json() as AiPayload;setBusy(false);applyAiPayload(payload,response.ok)};
   const improve=async(kind:string)=>runAi({kind:parts.length>1?"thread":"rewrite",prompt:`${kind}: ${parts.join("\n---\n")}`});
   const generateFromIdea=async()=>{if(!launch?.idea)return;const idea=launch.idea;await runAi({kind:"draft",prompt:`Turn this growth idea into a post or thread draft for human review.\nTopic: ${idea.topic}\nSeed hook: ${idea.hook}`,context:`Pillar: ${idea.pillar}\nRationale: ${idea.rationale}\nSignal: ${idea.change}`})};
-  useEffect(()=>{
-    if(launch?.autoGenerate&&aiContentApproved)void generateFromIdea();
-    // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps -- one-shot AI draft when opened from Today's Growth Plan
-  },[]);
   const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(!clean.length||clean.some((part)=>part.length>280))return;setBusy(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:launch?.idea?.topic,hook:launch?.idea?.hook??clean[0].split("\n")[0]});setBusy(false);if(ok){setDone(true);setTimeout(onClose,650)}else setError("Could not save this post.")};
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -318,6 +314,7 @@ export default function HomePage() {
   const [search, setSearch] = useState("");
   const [composer, setComposer] = useState(false);
   const [composerLaunch, setComposerLaunch] = useState<ComposerLaunch>();
+  const [composerKey, setComposerKey] = useState(0);
   const [content, setContent] = useState<ContentItem[]>([]);
   const [contentFilter, setContentFilter] = useState("All");
   const [connected, setConnected] = useState(false);
@@ -398,7 +395,32 @@ export default function HomePage() {
 
   const openComposer = (launch?: string | ComposerLaunch) => {
     setComposerLaunch(typeof launch === "string" ? { text: launch } : launch);
+    setComposerKey((key) => key + 1);
     setComposer(true);
+  };
+  const generateAiDraftFromIdea = async (idea: IdeaSignal) => {
+    openComposer({ text: idea.hook, idea, aiLoading: aiAvailability === "ready" });
+    if (aiAvailability !== "ready" || !csrf) return;
+    const response = await fetch("/api/ai/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({
+        kind: "draft",
+        prompt: `Turn this growth idea into a post or thread draft for human review.\nTopic: ${idea.topic}\nSeed hook: ${idea.hook}`,
+        context: `Pillar: ${idea.pillar}\nRationale: ${idea.rationale}\nSignal: ${idea.change}`,
+      }),
+    });
+    const payload = await response.json() as AiPayload;
+    const content = payload.content;
+    const parts = content === undefined ? [idea.hook] : Array.isArray(content) ? content : [String(content)];
+    setComposerLaunch({
+      text: parts[0] ?? idea.hook,
+      idea,
+      seededParts: response.ok && content !== undefined ? parts : undefined,
+      seedGenerated: response.ok && content !== undefined,
+      seedError: response.ok ? undefined : userFacingAiError(payload.error),
+    });
+    setComposerKey((key) => key + 1);
   };
   const dismissOnboarding=()=>{localStorage.setItem(ONBOARDING_STORAGE_KEY,"true");setSetupGuide(false)};
   const filteredSignals = signalData.filter((signal) => signal.topic.toLowerCase().includes(search.toLowerCase()));
@@ -475,7 +497,7 @@ export default function HomePage() {
               {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => <article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
             </section>:<section className="panel full-panel empty-analytics"><BarChart3 size={28}/><h2>Insufficient analytics data</h2><p>No verified X snapshots are available in the selected range yet.</p></section>}
 
-            <GrowthPlanPanel plan={growthPlan} dataSource={dataSource} aiAvailability={aiAvailability} onCreateDraft={(idea)=>openComposer({ text: idea.hook, idea })} onGenerateAi={(idea)=>openComposer({ text: idea.hook, idea, autoGenerate: true })} onReply={setSelectedReply} onOpenDiscover={()=>changeView("Discover")} onConnect={()=>changeView("Settings")}/>
+            <GrowthPlanPanel plan={growthPlan} dataSource={dataSource} aiAvailability={aiAvailability} onCreateDraft={(idea)=>openComposer({ text: idea.hook, idea })} onGenerateAi={(idea)=>void generateAiDraftFromIdea(idea)} onReply={setSelectedReply} onOpenDiscover={()=>changeView("Discover")} onConnect={()=>changeView("Settings")}/>
 
             <section className="overview-grid">
               <article className="panel growth-panel">
@@ -508,7 +530,7 @@ export default function HomePage() {
           </>}
         </div>
       </section>
-      {composer && <Composer launch={composerLaunch} csrf={csrf} evergreenEnabled={runtimeConfig.evergreenEnabled} aiContentApproved={runtimeConfig.aiContentApproved} onClose={() => { setComposer(false); setComposerLaunch(undefined); }} onSave={savePost}/>}
+      {composer && <Composer key={composerKey} launch={composerLaunch} csrf={csrf} evergreenEnabled={runtimeConfig.evergreenEnabled} aiContentApproved={runtimeConfig.aiContentApproved} onClose={() => { setComposer(false); setComposerLaunch(undefined); }} onSave={savePost}/>}
       {selectedReply && <ReplyComposer opportunity={selectedReply} live={dataSource === "live"} csrf={csrf} aiRepliesApproved={runtimeConfig.aiRepliesApproved} onFeedback={(vote)=>void sendFeedback("reply",selectedReply.id,vote,selectedReply)} onClose={() => setSelectedReply(undefined)}/>}
       {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); changeView("Settings"); }}/>}
     </main>
