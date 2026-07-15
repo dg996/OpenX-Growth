@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -53,6 +54,28 @@ async function freePort() {
   });
 }
 
+async function startAiFixture(port) {
+  const server=createServer(async(request,response)=>{
+    if(request.method!=="POST"||request.url!=="/v1/chat/completions"){
+      response.writeHead(404,{"Content-Type":"application/json"});response.end(JSON.stringify({error:"NOT_FOUND"}));return;
+    }
+    let body="";
+    for await(const chunk of request)body+=String(chunk);
+    if(body.includes("E2E_PROVIDER_FAILURE")){
+      response.writeHead(503,{"Content-Type":"text/plain"});response.end("FIXTURE_PRIVATE_PROVIDER_FAILURE");return;
+    }
+    let content;
+    if(body.includes("E2E_VALID_THREAD"))content=JSON.stringify({content:["Fixture thread part one.","Fixture thread part two.","Fixture thread part three."],rationale:"Deterministic thread fixture."});
+    else if(body.includes("E2E_MALFORMED_JSON"))content="not-json";
+    else if(body.includes("E2E_OVERSIZED_PART"))content=JSON.stringify({content:"x".repeat(281),rationale:"Oversized fixture."});
+    else content=JSON.stringify({content:"A deterministic fixture post.",rationale:"Deterministic post fixture."});
+    response.writeHead(200,{"Content-Type":"application/json"});
+    response.end(JSON.stringify({choices:[{message:{content}}]}));
+  });
+  await new Promise((resolveListen,reject)=>{server.once("error",reject);server.listen(port,"127.0.0.1",resolveListen);});
+  return {server,baseUrl:`http://127.0.0.1:${port}/v1`};
+}
+
 async function waitFor(url,expectedStatus,child,logs) {
   const deadline=Date.now()+45_000;
   while(Date.now()<deadline){
@@ -102,7 +125,7 @@ async function seedDemoResidue(stateDir,now) {
   await run(wrangler,["d1","execute","DB","--local","--config",config,"--persist-to",stateDir,"--command",statements.join(";")],{env:safeEnv()});
 }
 
-async function startInstance({port,stateDir,configured,protectedAccess,analyticsFixture=false,demoResidue=false,maxWrites}) {
+async function startInstance({port,stateDir,configured,protectedAccess,analyticsFixture=false,demoResidue=false,maxWrites,aiBaseUrl,aiEnabled=false}) {
   await run(wrangler,["d1","migrations","apply","DB","--local","--config",config,"--persist-to",stateDir],{env:safeEnv()});
   if(analyticsFixture)await seedAnalytics(stateDir,analyticsFixtureNow);
   if(demoResidue)await seedDemoResidue(stateDir,analyticsFixtureNow);
@@ -116,8 +139,10 @@ async function startInstance({port,stateDir,configured,protectedAccess,analytics
     APP_ACCESS_TOKEN:protectedAccess?accessToken:"",
     OPENX_API_TOKEN:configured?"e2e-api-token":"",
     CRON_SECRET:configured?"e2e-cron-token":"",
-    AI_API_KEY:"",
-    X_AI_CONTENT_APPROVED:"false",
+    AI_API_KEY:aiEnabled?"e2e-ai-key":"",
+    AI_BASE_URL:aiBaseUrl??"https://api.openai.com/v1",
+    AI_MODEL:aiEnabled?"e2e-ai-model":"gpt-5-mini",
+    X_AI_CONTENT_APPROVED:aiEnabled?"true":"false",
     X_AI_REPLIES_APPROVED:"false",
     MAX_DAILY_X_RESOURCES:protectedAccess?"25":"500",
     MAX_DAILY_X_WRITES:String(maxWrites??(protectedAccess?3:50)),
@@ -132,12 +157,16 @@ async function startInstance({port,stateDir,configured,protectedAccess,analytics
 
 const stateRoot=await mkdtemp(join(tmpdir(),"openx-growth-e2e-"));
 const instances=[];
+let aiFixture;
 try{
-  const [demoPort,misconfiguredPort,protectedPort,publisherPort]=await Promise.all([freePort(),freePort(),freePort(),freePort()]);
+  const ports=await Promise.all(Array.from({length:6},()=>freePort()));
+  const [demoPort,misconfiguredPort,protectedPort,publisherPort,aiPort,aiFixturePort]=ports;
+  aiFixture=await startAiFixture(aiFixturePort);
   instances.push(await startInstance({port:demoPort,stateDir:join(stateRoot,"demo"),configured:false,protectedAccess:false,demoResidue:true}));
   instances.push(await startInstance({port:misconfiguredPort,stateDir:join(stateRoot,"misconfigured"),configured:true,protectedAccess:false}));
   instances.push(await startInstance({port:protectedPort,stateDir:join(stateRoot,"protected"),configured:true,protectedAccess:true,analyticsFixture:true}));
   instances.push(await startInstance({port:publisherPort,stateDir:join(stateRoot,"publisher"),configured:true,protectedAccess:true,analyticsFixture:true,maxWrites:50}));
+  instances.push(await startInstance({port:aiPort,stateDir:join(stateRoot,"ai"),configured:true,protectedAccess:true,analyticsFixture:true,aiBaseUrl:aiFixture.baseUrl,aiEnabled:true}));
   await run(process.execPath,["--test","tests/e2e-smoke.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[0].appUrl})});
   process.stdout.write("E2E demo fixture: passed\n");
   await run(process.execPath,["--test","tests/e2e-misconfigured.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[1].appUrl})});
@@ -146,11 +175,14 @@ try{
   process.stdout.write("E2E protected fixture: passed\n");
   await run(process.execPath,["--test","tests/e2e-publisher-recovery.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[3].appUrl,E2E_API_TOKEN:"e2e-api-token",E2E_CRON_TOKEN:"e2e-cron-token"})});
   process.stdout.write("E2E publisher recovery fixture: passed\n");
+  await run(process.execPath,["--test","tests/e2e-ai.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[4].appUrl,E2E_APP_ACCESS_TOKEN:accessToken})});
+  process.stdout.write("E2E AI fixture: passed\n");
 }catch(error){
   for(const instance of instances)process.stderr.write(instance.logs());
   throw error;
 }finally{
   for(const instance of instances)instance.child.kill("SIGTERM");
   await Promise.all(instances.map((instance)=>instance.child.exitCode!==null?Promise.resolve():new Promise((resolveExit)=>instance.child.once("exit",resolveExit))));
+  if(aiFixture)await new Promise((resolveClose,reject)=>aiFixture.server.close((error)=>error?reject(error):resolveClose()));
   await rm(stateRoot,{recursive:true,force:true});
 }

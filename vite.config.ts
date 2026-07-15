@@ -16,7 +16,7 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const disableEnvFiles=process.env.OPENX_E2E==="1"||process.env.OPENX_DISABLE_ENV_FILES==="1";
 const e2eBindingNames=[
   "APP_URL","X_CLIENT_ID","SESSION_SECRET","APP_ACCESS_TOKEN","OPENX_API_TOKEN","CRON_SECRET",
-  "AI_API_KEY","X_AI_CONTENT_APPROVED","X_AI_REPLIES_APPROVED",
+  "AI_API_KEY","AI_BASE_URL","AI_MODEL","X_AI_CONTENT_APPROVED","X_AI_REPLIES_APPROVED",
   "MAX_DAILY_X_RESOURCES","MAX_DAILY_X_WRITES","OPENX_E2E","OPENX_E2E_X_FIXTURE",
 ] as const;
 const e2eVars=process.env.OPENX_E2E==="1"

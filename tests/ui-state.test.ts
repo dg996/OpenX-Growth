@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  aiErrorGuidance,
   decideOnboarding,
   isWorkspaceBlocking,
   resolveWorkspaceState,
@@ -87,4 +88,18 @@ test("sync errors are reduced to the public operational allowlist", () => {
   }
   assert.equal(sanitizeSyncError("provider body with private details"), "SYNC_FAILED");
   assert.equal(sanitizeSyncError(undefined), "SYNC_FAILED");
+});
+
+test("AI failures become friendly guidance without exposing provider details", () => {
+  const settings=aiErrorGuidance("AI_NOT_CONFIGURED");
+  assert.equal(settings.openSettings,true);
+  assert.match(settings.message,/settings/i);
+
+  const timeout=aiErrorGuidance("AI_PROVIDER_TIMEOUT");
+  assert.equal(timeout.openSettings,false);
+  assert.match(timeout.message,/too long|try again/i);
+
+  const provider=aiErrorGuidance("AI_PROVIDER_429_PRIVATE_BODY");
+  assert.equal(provider.openSettings,false);
+  assert.doesNotMatch(provider.message,/429|PRIVATE_BODY|AI_PROVIDER/);
 });

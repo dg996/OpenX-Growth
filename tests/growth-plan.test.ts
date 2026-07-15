@@ -1,84 +1,72 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildGrowthPlan, growthPlanStatusMessage } from "../lib/growth-plan.ts";
+
+import { buildGrowthPlan } from "../lib/growth-plan.ts";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth.ts";
 
-const idea = (topic: string, score: number): IdeaSignal => ({
-  topic,
-  change: "test",
-  score,
-  hook: `Hook for ${topic}`,
-  rationale: "test",
-  pillar: "Industry insight",
-  scoreProvenance: { source: "derived", recordedAt: 0 },
+function idea(topic: string, score: number): IdeaSignal {
+  return {
+    topic,
+    score,
+    change: "Fixture change",
+    hook: `${topic} hook`,
+    rationale: "Fixture rationale",
+    pillar: "Fixture pillar",
+    scoreProvenance: { source: "derived", recordedAt: 1 },
+  };
+}
+
+function opportunity(id: string, relevance: number): ReplyOpportunity {
+  return {
+    id,
+    relevance,
+    initials: "FX",
+    name: "Fixture author",
+    handle: "@fixture",
+    post: `Fixture post ${id}`,
+    reach: "10",
+    url: `https://x.com/fixture/status/${id}`,
+    suggestedReply: "",
+    reason: "Fixture reason",
+    reachProvenance: { source: "estimate", recordedAt: 1 },
+    relevanceProvenance: { source: "derived", recordedAt: 1 },
+  };
+}
+
+test("selects the highest-scored idea with a deterministic topic tie-break", () => {
+  const plan = buildGrowthPlan(
+    [idea("Beta", 80), idea("Lower", 79), idea("Alpha", 80)],
+    [],
+  );
+
+  assert.equal(plan.content?.topic, "Alpha");
 });
 
-const opportunity = (id: string, relevance: number): ReplyOpportunity => ({
-  id,
-  initials: "AB",
-  name: "Account",
-  handle: "@account",
-  post: "Post text",
-  reach: "10K",
-  relevance,
-  url: "https://x.com",
-  suggestedReply: "",
-  reason: "test",
-  reachProvenance: { source: "live", recordedAt: 0 },
-  relevanceProvenance: { source: "derived", recordedAt: 0 },
-});
-
-test("buildGrowthPlan picks highest-scored idea and top three reply opportunities", () => {
-  const plan = buildGrowthPlan({
-    dataSource: "live",
-    connected: true,
-    ideas: [idea("Lower", 40), idea("Higher", 88), idea("Middle", 60)],
-    opportunities: [
-      opportunity("c", 70),
-      opportunity("a", 95),
-      opportunity("d", 50),
-      opportunity("b", 80),
+test("orders, deduplicates, and limits reply actions deterministically", () => {
+  const plan = buildGrowthPlan(
+    [],
+    [
+      opportunity("reply-d", 60),
+      opportunity("reply-b", 95),
+      opportunity("reply-a", 95),
+      opportunity("reply-c", 70),
+      opportunity("reply-a", 50),
     ],
-  });
-  assert.equal(plan.status, "ready");
-  assert.equal(plan.content?.topic, "Higher");
-  assert.deepEqual(plan.replies.map((row) => row.id), ["a", "b", "c"]);
-});
-
-test("buildGrowthPlan labels demo data without requiring a live connection", () => {
-  const plan = buildGrowthPlan({
-    dataSource: "demo",
-    connected: false,
-    ideas: [idea("Demo topic", 90)],
-    opportunities: [opportunity("demo-1", 80)],
-  });
-  assert.equal(plan.status, "demo");
-  assert.equal(plan.content?.topic, "Demo topic");
-  assert.equal(plan.replies.length, 1);
-});
-
-test("buildGrowthPlan surfaces disconnected and insufficient live states", () => {
-  assert.equal(
-    buildGrowthPlan({ dataSource: "live", connected: false, ideas: [idea("A", 1)], opportunities: [] }).status,
-    "disconnected",
   );
-  assert.equal(
-    buildGrowthPlan({ dataSource: "live", connected: true, ideas: [], opportunities: [] }).status,
-    "insufficient",
-  );
-  const partial = buildGrowthPlan({
-    dataSource: "live",
-    connected: true,
-    ideas: [],
-    opportunities: [opportunity("only", 70)],
-  });
-  assert.equal(partial.status, "ready");
-  assert.equal(partial.content, undefined);
-  assert.equal(partial.replies.length, 1);
+
+  assert.deepEqual(plan.replies.map((reply) => reply.id), ["reply-a", "reply-b", "reply-c"]);
 });
 
-test("growthPlanStatusMessage documents each empty-state reason", () => {
-  assert.match(growthPlanStatusMessage("demo").body, /Connect X/i);
-  assert.match(growthPlanStatusMessage("disconnected").body, /Settings/i);
-  assert.match(growthPlanStatusMessage("insufficient").body, /sync/i);
+test("returns explicit empty actions and does not mutate either input", () => {
+  assert.deepEqual(buildGrowthPlan([], []), { content: null, replies: [] });
+
+  const ideas = [idea("Beta", 80), idea("Alpha", 80)];
+  const opportunities = [opportunity("reply-b", 70), opportunity("reply-a", 95)];
+  const ideasBefore = structuredClone(ideas);
+  const opportunitiesBefore = structuredClone(opportunities);
+
+  buildGrowthPlan(ideas, opportunities);
+
+  assert.deepEqual(ideas, ideasBefore);
+  assert.deepEqual(opportunities, opportunitiesBefore);
 });

@@ -84,3 +84,26 @@ export function syncErrorGuidance(error: unknown) {
     retryable,
   };
 }
+
+const AI_SETTINGS_ERRORS=new Set([
+  "AI_NOT_CONFIGURED",
+  "X_AI_CONTENT_APPROVAL_REQUIRED",
+  "X_AI_REPLY_APPROVAL_REQUIRED",
+  "AI_REPLY_APPROVAL_REQUIRED",
+]);
+
+export function aiErrorGuidance(error: unknown) {
+  const code=typeof error==="string"?error:"";
+  if(AI_SETTINGS_ERRORS.has(code))return {
+    message:"AI drafting is off. Review the provider and X approval settings to enable it.",
+    openSettings:true,
+  };
+  if(code==="AI_PROVIDER_TIMEOUT")return {
+    message:"The AI provider took too long to respond. Try again when you are ready.",
+    openSettings:false,
+  };
+  return {
+    message:"AI could not create a valid suggestion. Try again or start with the editable draft.",
+    openSettings:false,
+  };
+}

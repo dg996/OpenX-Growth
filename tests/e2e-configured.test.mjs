@@ -200,6 +200,8 @@ test("configured instance syncs only through the injected X fixture and persists
   assert.equal(sync.body.source,"live");
   assert.equal(sync.body.account.username,"fixture_owner");
   assert.equal(sync.body.account.followersCount,125);
+  assert.ok(sync.body.ideas.length>0);
+  assert.ok(sync.body.opportunities.length>0);
   assert.ok(sync.body.opportunities.every((row)=>row.id!=="feed-owner"));
   assert.ok(sync.body.opportunities.every((row)=>["live","estimate"].includes(row.reachProvenance.source)));
   assert.ok(sync.body.ideas.every((row)=>row.bars===undefined&&row.scoreProvenance.source==="derived"));

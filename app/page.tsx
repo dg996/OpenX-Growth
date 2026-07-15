@@ -33,11 +33,10 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { aiDraftAvailability, userFacingAiError } from "../lib/ai-content";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildChartCoordinates } from "../lib/chart";
-import { buildGrowthPlan, growthPlanStatusMessage } from "../lib/growth-plan";
-import { decideOnboarding, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
+import { buildGrowthPlan } from "../lib/growth-plan";
+import { aiErrorGuidance, decideOnboarding, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth";
 
 type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Settings";
@@ -79,8 +78,9 @@ type AccountProfile={id:string;name:string;username:string;profileImageUrl?:stri
 type StoredPost={id:string;text:string;status:string;scheduledAt?:number;publishedAt?:number;evergreen?:boolean;lastError?:string};
 type PostsPayload={posts:StoredPost[]};
 type SyncPayload={account:AccountProfile;opportunities:ReplyOpportunity[];ideas:IdeaSignal[];syncedAt:string;error?:string};
-type AiPayload={content?:string|string[];error?:string;message?:string};
-type ComposerLaunch={text?:string;idea?:IdeaSignal;seededParts?:string[];seedGenerated?:boolean;seedError?:string;aiLoading?:boolean};
+type AiPayload={content?:string|string[];rationale?:string;generated?:boolean;error?:string};
+type AiRequest={kind:"idea"|"post"|"thread"|"reply"|"rewrite";prompt:string;context?:string};
+type ComposerSeed={parts:string[];topic?:string;generated:boolean};
 
 const postStatusLabel=(status:string):PostStatus=>status==="needs_review"?"Needs review":`${status.charAt(0).toUpperCase()}${status.slice(1)}` as PostStatus;
 
@@ -91,6 +91,15 @@ async function fetchXSync(force=false):Promise<SyncPayload>{
   const payload=await response.json() as SyncPayload;
   if(!response.ok)throw new Error(sanitizeSyncError(payload.error));
   return payload;
+}
+
+async function requestAiGeneration(csrf:string,input:AiRequest):Promise<AiPayload&{content:string|string[]}> {
+  const response=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(input)});
+  let payload:AiPayload;
+  try{payload=await response.json() as AiPayload}catch{throw new Error("AI_INVALID_RESPONSE")}
+  const validContent=typeof payload.content==="string"||(Array.isArray(payload.content)&&payload.content.every((part)=>typeof part==="string"));
+  if(!response.ok||!validContent)throw new Error(payload.error??"AI_INVALID_RESPONSE");
+  return payload as AiPayload&{content:string|string[]};
 }
 
 const navItems = [
@@ -165,24 +174,21 @@ function DataSeriesChart({points,label}:{points:Array<{recordedAt:number;value:n
   return <div className="chart-wrap"><div className="chart-y"><span>{maximum.toLocaleString()}</span><span>{minimum.toLocaleString()}</span></div><svg className="growth-chart" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label={label}>{[20,55,90,125,160].map((y)=><line key={y} x1="0" y1={y} x2="640" y2={y} className="grid-line"/>)}<polyline points={coordinates} className="growth-line" fill="none"/></svg><div className="chart-x"><span>{new Date(points[0].recordedAt).toLocaleDateString()}</span><span>{new Date(points.at(-1)!.recordedAt).toLocaleDateString()}</span></div></div>;
 }
 
-function Composer({ onClose, onSave, launch, csrf, evergreenEnabled, aiContentApproved }: { onClose: () => void; onSave: (post:SavePostInput) => Promise<boolean>; launch?: ComposerLaunch; csrf:string;evergreenEnabled:boolean;aiContentApproved:boolean }) {
-  const [parts,setParts] = useState(() => launch?.seededParts ?? [launch?.text || ""]); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(Boolean(launch?.seedGenerated)); const [busy,setBusy]=useState(Boolean(launch?.aiLoading)); const [done,setDone]=useState(false); const [error,setError]=useState(launch?.seedError ?? "");
+function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnabled }: { onClose: () => void; onSave: (post:SavePostInput) => Promise<boolean>; onOpenSettings:()=>void;seed:ComposerSeed; csrf:string;evergreenEnabled:boolean }) {
+  const [parts,setParts] = useState(seed.parts); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(seed.generated); const [busy,setBusy]=useState(false); const [done,setDone]=useState(false); const [error,setError]=useState("");const [aiError,setAiError]=useState("");
   const updatePart=(index:number,value:string)=>setParts((current)=>current.map((part,position)=>position===index?value:part));
-  const applyAiPayload=(payload:AiPayload,responseOk:boolean)=>{if(!responseOk||payload.content===undefined){setError(payload.message??userFacingAiError(payload.error));return}const content=payload.content;if(Array.isArray(content))setParts(content);else setParts([String(content)]);setGenerated(true)};
-  const runAi=async(body:Record<string,string>)=>{setBusy(true);setError("");const response=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(body)});const payload=await response.json() as AiPayload;setBusy(false);applyAiPayload(payload,response.ok)};
-  const improve=async(kind:string)=>runAi({kind:parts.length>1?"thread":"rewrite",prompt:`${kind}: ${parts.join("\n---\n")}`});
-  const generateFromIdea=async()=>{if(!launch?.idea)return;const idea=launch.idea;await runAi({kind:"draft",prompt:`Turn this growth idea into a post or thread draft for human review.\nTopic: ${idea.topic}\nSeed hook: ${idea.hook}`,context:`Pillar: ${idea.pillar}\nRationale: ${idea.rationale}\nSignal: ${idea.change}`})};
-  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(!clean.length||clean.some((part)=>part.length>280))return;setBusy(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:launch?.idea?.topic,hook:launch?.idea?.hook??clean[0].split("\n")[0]});setBusy(false);if(ok){setDone(true);setTimeout(onClose,650)}else setError("Could not save this post.")};
+  const improve=async(kind:string)=>{setBusy(true);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt:`${kind}: ${parts.join("\n---\n")}`});const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){setAiError(failure instanceof Error?failure.message:"")}finally{setBusy(false)}};
+  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(!clean.length||clean.some((part)=>part.length>280))return;setBusy(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setBusy(false);if(ok){setDone(true);setTimeout(onClose,650)}else setError("Could not save this post.")};
+  const guidance=aiError?aiErrorGuidance(aiError):null;
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <section className="composer" onMouseDown={(e) => e.stopPropagation()} aria-modal="true" role="dialog">
-        <header><div><span className="eyebrow">COMPOSE</span><h2>{launch?.idea?"Draft from idea":"Create a post"}</h2></div><button className="icon-btn" onClick={onClose}><X size={18}/></button></header>
-        {launch?.idea&&<div className="growth-plan-seed"><Lightbulb size={14}/><div><strong>{launch.idea.topic}</strong><span>{launch.idea.pillar} · {launch.idea.rationale}</span></div></div>}
+        <header><div><span className="eyebrow">COMPOSE</span><h2>Create a post</h2></div><button className="icon-btn" onClick={onClose}><X size={18}/></button></header>
         <div className="composer-profile"><div className="avatar lime-avatar">YOU</div><div><strong>Your account</strong><span>@connected_account</span></div></div>
         <div className="thread-editor">{parts.map((part,index)=><div className="thread-part" key={index}><span>{index+1}</span><textarea value={part} onChange={(event)=>updatePart(index,event.target.value)} autoFocus={index===0} maxLength={280} placeholder={index===0?"Write your post…":"Continue the thread…"}/><small>{part.length}/280</small>{parts.length>1&&<button onClick={()=>setParts((current)=>current.filter((_,position)=>position!==index))} aria-label={`Remove part ${index+1}`}><X size={13}/></button>}</div>)}</div>
-        <div className="composer-toolbar"><button className="outline-btn" onClick={()=>setParts((current)=>[...current,""])}><Plus size={14}/> Add thread post</button>{aiContentApproved&&<div className="ai-tools">{launch?.idea&&<button disabled={busy} onClick={()=>void generateFromIdea()}><Sparkles size={14}/> Regenerate from idea</button>}<button disabled={busy} onClick={()=>void improve("Write a stronger hook")}><Sparkles size={14}/> Stronger hook</button><button disabled={busy} onClick={()=>void improve("Shorten and clarify")}><Zap size={14}/> Shorten</button><button disabled={busy} onClick={()=>void improve("Match my writing voice")}><PenLine size={14}/> Match my voice</button></div>}</div>
+        <div className="composer-toolbar"><button className="outline-btn" onClick={()=>setParts((current)=>[...current,""])}><Plus size={14}/> Add thread post</button><div className="ai-tools"><button disabled={busy} onClick={()=>improve("Write a stronger hook")}><Sparkles size={14}/> Stronger hook</button><button disabled={busy} onClick={()=>improve("Shorten and clarify")}><Zap size={14}/> Shorten</button><button disabled={busy} onClick={()=>improve("Match my writing voice")}><PenLine size={14}/> Match my voice</button></div></div>
         <div className="publish-options"><label><input type="checkbox" checked={scheduled} onChange={(event)=>setScheduled(event.target.checked)}/> Schedule</label>{scheduled&&<input type="datetime-local" value={scheduledAt} onChange={(event)=>setScheduledAt(event.target.value)} min={new Date().toISOString().slice(0,16)}/>} {evergreenEnabled&&<><label><input type="checkbox" checked={evergreen} onChange={(event)=>setEvergreen(event.target.checked)}/> Evergreen</label>{evergreen&&<label>Repeat every <input type="number" min="7" value={interval} onChange={(event)=>setInterval(Number(event.target.value))}/> days</label>}</>}</div>
-        {generated&&<div className="generated-notice"><Sparkles size={13}/> AI-generated suggestion — review every part before publishing.</div>}{error&&<div className="inline-error">{error}</div>}
+        {generated&&<div className="generated-notice"><Sparkles size={13}/> AI-generated suggestion — review every part before publishing.</div>}{guidance&&<div className="inline-error">{guidance.message}{guidance.openSettings&&<button className="text-btn" onClick={onOpenSettings}>Open Settings</button>}</div>}{error&&<div className="inline-error">{error}</div>}
         <footer><button className="ghost-btn" onClick={onClose}>Cancel</button><button className="primary-btn" onClick={submit} disabled={busy||!parts.some((part)=>part.trim())}>{done?<><Check size={16}/> Saved</>:busy?"Working…":scheduled?<><CalendarDays size={16}/> Schedule</>:<><FileText size={16}/> Save draft</>}</button></footer>
       </section>
     </div>
@@ -194,7 +200,7 @@ function ReplyComposer({ opportunity, live, onClose, csrf, aiRepliesApproved, on
   const [sending,setSending] = useState(false);
   const [result,setResult] = useState<"sent"|"error"|null>(null);
   const [generated,setGenerated]=useState(Boolean(opportunity.suggestedReply));
-  const suggest=async()=>{setSending(true);const response=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify({kind:"reply",prompt:"Draft a useful, specific reply for human review",context:opportunity.post})});const payload=await response.json() as AiPayload;setSending(false);if(response.ok&&payload.content!==undefined){setText(String(payload.content));setGenerated(true)}else setResult("error")};
+  const suggest=async()=>{setSending(true);setResult(null);try{const payload=await requestAiGeneration(csrf,{kind:"reply",prompt:"Draft a useful, specific reply for human review",context:opportunity.post});if(typeof payload.content!=="string")throw new Error("AI_INVALID_RESPONSE");setText(payload.content);setGenerated(true)}catch{setResult("error")}finally{setSending(false)}};
   const send = async () => {
     if (!live) { window.open(opportunity.url,"_blank","noopener,noreferrer"); return; }
     setSending(true); setResult(null);
@@ -278,20 +284,6 @@ function SetupGuide({ onClose, onGoToSettings }: { onClose: () => void; onGoToSe
   </div>;
 }
 
-function GrowthPlanPanel({plan,dataSource,aiAvailability,onCreateDraft,onGenerateAi,onReply,onOpenDiscover,onConnect}:{plan:ReturnType<typeof buildGrowthPlan>;dataSource:"demo"|"live";aiAvailability:ReturnType<typeof aiDraftAvailability>;onCreateDraft:(idea:IdeaSignal)=>void;onGenerateAi:(idea:IdeaSignal)=>void;onReply:(opportunity:ReplyOpportunity)=>void;onOpenDiscover:()=>void;onConnect:()=>void}) {
-  const empty=growthPlanStatusMessage(plan.status);
-  const aiHint=aiAvailability==="not_configured"?"Add AI_API_KEY in Settings to enable draft generation.":aiAvailability==="approval_required"?"Set X_AI_CONTENT_APPROVED=true after reviewing your provider policy.":"";
-  return (
-    <article className="panel growth-plan-panel">
-      <div className="panel-header"><div><span className="eyebrow">PRIORITY</span><h2>Today&apos;s Growth Plan <DataBadge source={dataSource}/></h2><p>Built from ideas and reply opportunities already loaded in this workspace. No hidden sync or AI calls on open.</p></div>{plan.status==="ready"&&<button className="text-btn" onClick={onOpenDiscover}>Open Discover <ArrowUpRight size={13}/></button>}</div>
-      {plan.status==="ready"||plan.status==="demo"?<>
-        {plan.content&&<section className="growth-plan-block"><header><Lightbulb size={15}/><div><strong>Content to publish</strong><span>{plan.content.topic} · score {plan.content.score}</span></div></header><p>{plan.content.hook}</p><div className="growth-plan-actions"><button className="outline-btn" onClick={()=>onCreateDraft(plan.content!)}><PenLine size={14}/> Create draft</button><button className="outline-btn" disabled={aiAvailability!=="ready"} title={aiHint||undefined} onClick={()=>onGenerateAi(plan.content!)}><Sparkles size={14}/> Generate with AI</button></div>{aiHint&&aiAvailability!=="ready"&&<small className="growth-plan-note">{aiHint}</small>}</section>}
-        <section className="growth-plan-block"><header><MessageCircle size={15}/><div><strong>Reply opportunities</strong><span>{plan.replies.length?`Top ${plan.replies.length} ranked conversations`:"No ranked conversations yet"}</span></div></header>{plan.replies.length?plan.replies.map((opportunity)=><div className="growth-plan-reply" key={opportunity.id}><div><strong>{opportunity.name} <small>{opportunity.handle}</small></strong><p>{opportunity.post}</p><em>{opportunity.reason}</em></div><button className="outline-btn" onClick={()=>onReply(opportunity)}><MessageCircle size={14}/> Draft reply</button></div>):<p className="growth-plan-empty-copy">Sync from X on Discover to populate reply opportunities.</p>}</section>
-      </>:<div className="growth-plan-empty"><Target size={22}/><strong>{empty.title}</strong><p>{empty.body}</p>{plan.status==="disconnected"&&<button className="primary-btn" onClick={onConnect}>Open Settings</button>}{plan.status==="insufficient"&&<button className="outline-btn" onClick={onOpenDiscover}>Go to Discover</button>}</div>}
-    </article>
-  );
-}
-
 function WorkspaceStatePanel({state,onSettings}:{state:"loading"|"configured-disconnected";onSettings:()=>void}) {
   const content={
     loading:{title:"Loading workspace",body:"Checking the protected configuration and X connection before showing data."},
@@ -308,13 +300,66 @@ function WorkspaceSyncNotice({state,error,onRetry,onSettings}:{state:WorkspaceSt
   return <section className="workspace-sync-notice error" role="alert"><CircleGauge size={17}/><div><strong>{guidance.title}</strong><span>{guidance.body}</span></div>{guidance.retryable&&<button className="outline-btn" onClick={onRetry}>Retry sync</button>}<button className="outline-btn" onClick={onSettings}>Open Settings</button></section>;
 }
 
+function TodaysGrowthPlan({ideas,opportunities,source,aiReady,csrf,onCreate,onReply,onSettings}:{ideas:IdeaSignal[];opportunities:ReplyOpportunity[];source:"demo"|"live";aiReady:boolean;csrf:string;onCreate:(seed:ComposerSeed)=>void;onReply:(opportunity:ReplyOpportunity)=>void;onSettings:()=>void}) {
+  const plan=useMemo(()=>buildGrowthPlan(ideas,opportunities),[ideas,opportunities]);
+  const [format,setFormat]=useState<"post"|"thread">("post");
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState("");
+  const inFlight=useRef(false);
+  const guidance=error?aiErrorGuidance(error):null;
+
+  const generate=async()=>{
+    if(inFlight.current||!plan.content)return;
+    const selectedIdea=plan.content;
+    const selectedFormat=format;
+    inFlight.current=true;setBusy(true);setError("");
+    try{
+      const payload=await requestAiGeneration(csrf,{
+        kind:selectedFormat,
+        prompt:selectedFormat==="post"?"Write one complete X post from this content idea.":"Write an X thread of 3 to 5 parts from this content idea.",
+        context:`Topic: ${selectedIdea.topic}\nHook: ${selectedIdea.hook}\nPillar: ${selectedIdea.pillar}\nReason: ${selectedIdea.rationale}`,
+      });
+      const parts=Array.isArray(payload.content)?payload.content:[payload.content];
+      onCreate({parts,topic:selectedIdea.topic,generated:true});
+    }catch(failure){setError(failure instanceof Error?failure.message:"")}
+    finally{inFlight.current=false;setBusy(false)}
+  };
+
+  return <section className="panel growth-plan-panel" aria-labelledby="growth-plan-title">
+    <div className="panel-header growth-plan-header"><div><span className="eyebrow">NEXT ACTION</span><h2 id="growth-plan-title">Today&apos;s Growth Plan <DataBadge source={source}/></h2><p>One content move and the strongest conversations from the data already loaded.</p></div></div>
+    <div className="growth-plan-grid">
+      <section className="growth-plan-content" aria-label="Content action">
+        <span className="eyebrow">CREATE</span>
+        {plan.content?<>
+          <div className="growth-plan-title-row"><h3>{plan.content.topic}</h3><strong>{plan.content.score}</strong></div>
+          <p className="growth-plan-hook">{plan.content.hook}</p>
+          <p className="growth-plan-rationale">{plan.content.rationale}</p>
+          <div className="growth-plan-provenance"><span>Algorithm: {plan.content.algorithmVersion??(source==="demo"?"demo sample":"not available")}</span><DataBadge source={plan.content.scoreProvenance.source}/></div>
+          {source==="demo"
+            ? <div className="growth-plan-actions"><button className="primary-btn" onClick={onSettings}><Link2 size={14}/> Connect X for a live plan</button></div>
+            : <div className="growth-plan-actions">
+                <button className="outline-btn" onClick={()=>onCreate({parts:[plan.content!.hook],topic:plan.content!.topic,generated:false})}><PenLine size={14}/> Create draft</button>
+                {aiReady?<>
+                  <div className="growth-plan-formats" role="group" aria-label="AI draft format"><button aria-pressed={format==="post"} disabled={busy} onClick={()=>setFormat("post")}>Post</button><button aria-pressed={format==="thread"} disabled={busy} onClick={()=>setFormat("thread")}>Thread</button></div>
+                  <button className="primary-btn" onClick={()=>void generate()} disabled={busy}><Sparkles size={14}/> {busy?"Generating…":"Generate with AI"}</button>
+                </>:<div className="growth-plan-ai-off"><span>AI drafting is off</span><button className="text-btn" onClick={onSettings}>Open Settings</button></div>}
+              </div>}
+          {guidance&&<div className="inline-error growth-plan-error" role="alert">{guidance.message}{guidance.openSettings&&<button className="text-btn" onClick={onSettings}>Open Settings</button>}</div>}
+        </>:<div className="growth-plan-empty">No content recommendation yet</div>}
+      </section>
+      <section className="growth-plan-replies" aria-label="Reply actions">
+        <span className="eyebrow">ENGAGE</span>
+        {plan.replies.length?plan.replies.map((reply)=><article className="growth-plan-reply" key={reply.id}><div><strong>{reply.name}<small>{reply.handle}</small></strong><p>{reply.post}</p><span>{reply.relevance}% relevance · {reply.reason}</span></div>{source==="live"&&<button className="outline-btn" onClick={()=>onReply(reply)}><MessageCircle size={14}/> Reply</button>}</article>):<div className="growth-plan-empty">No reply opportunities yet</div>}
+      </section>
+    </div>
+  </section>;
+}
+
 export default function HomePage() {
   const [view, setView] = useState<View>("Overview");
   const [range, setRange] = useState("28D");
   const [search, setSearch] = useState("");
-  const [composer, setComposer] = useState(false);
-  const [composerLaunch, setComposerLaunch] = useState<ComposerLaunch>();
-  const [composerKey, setComposerKey] = useState(0);
+  const [composerSeed, setComposerSeed] = useState<ComposerSeed|null>(null);
   const [content, setContent] = useState<ContentItem[]>([]);
   const [contentFilter, setContentFilter] = useState("All");
   const [connected, setConnected] = useState(false);
@@ -393,35 +438,7 @@ export default function HomePage() {
     } finally { setSyncing(false); }
   };
 
-  const openComposer = (launch?: string | ComposerLaunch) => {
-    setComposerLaunch(typeof launch === "string" ? { text: launch } : launch);
-    setComposerKey((key) => key + 1);
-    setComposer(true);
-  };
-  const generateAiDraftFromIdea = async (idea: IdeaSignal) => {
-    openComposer({ text: idea.hook, idea, aiLoading: aiAvailability === "ready" });
-    if (aiAvailability !== "ready" || !csrf) return;
-    const response = await fetch("/api/ai/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-      body: JSON.stringify({
-        kind: "draft",
-        prompt: `Turn this growth idea into a post or thread draft for human review.\nTopic: ${idea.topic}\nSeed hook: ${idea.hook}`,
-        context: `Pillar: ${idea.pillar}\nRationale: ${idea.rationale}\nSignal: ${idea.change}`,
-      }),
-    });
-    const payload = await response.json() as AiPayload;
-    const content = payload.content;
-    const parts = content === undefined ? [idea.hook] : Array.isArray(content) ? content : [String(content)];
-    setComposerLaunch({
-      text: parts[0] ?? idea.hook,
-      idea,
-      seededParts: response.ok && content !== undefined ? parts : undefined,
-      seedGenerated: response.ok && content !== undefined,
-      seedError: response.ok ? undefined : userFacingAiError(payload.error),
-    });
-    setComposerKey((key) => key + 1);
-  };
+  const openComposer = (seed:ComposerSeed={parts:[""],generated:false}) => { setComposerSeed(seed); };
   const dismissOnboarding=()=>{localStorage.setItem(ONBOARDING_STORAGE_KEY,"true");setSetupGuide(false)};
   const filteredSignals = signalData.filter((signal) => signal.topic.toLowerCase().includes(search.toLowerCase()));
   const visibleContent = content.filter((item) => contentFilter === "All" || item.status === contentFilter);
@@ -430,9 +447,7 @@ export default function HomePage() {
 
   const changeView = (next: View) => { setView(next); setSearch(""); };
   const dataSource:"demo"|"live"=runtimeConfig.demoMode?"demo":"live";
-  const growthPlan = useMemo(() => buildGrowthPlan({ dataSource, connected, ideas: signalData, opportunities: opportunityData }), [dataSource, connected, signalData, opportunityData]);
-  const aiAvailability = aiDraftAvailability({ aiConfigured: runtimeConfig.aiConfigured, aiContentApproved: runtimeConfig.aiContentApproved });
-  const hasLiveData=Boolean(account||opportunityData.length>0||signalData.length>0||analytics?.dataStatus==="available");
+  const hasLiveData=Boolean(opportunityData.length>0||signalData.length>0||analytics?.dataStatus==="available");
   const workspaceState=resolveWorkspaceState({status:statusLoaded?{configured:runtimeConfig.configured,demoMode:runtimeConfig.demoMode,connected}:null,syncing,syncError,lastSync,hasLiveData});
   const changeRange=(next:string)=>{setRange(next);if(dataSource==="live")void loadAnalytics(next)};
   const toggleTheme = () => {
@@ -493,11 +508,10 @@ export default function HomePage() {
               : <>
           <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX(true)} onSettings={()=>changeView("Settings")}/>
           {view === "Overview" && <>
+            <TodaysGrowthPlan ideas={signalData} opportunities={opportunityData} source={dataSource} aiReady={runtimeConfig.aiConfigured&&runtimeConfig.aiContentApproved} csrf={csrf} onCreate={openComposer} onReply={setSelectedReply} onSettings={()=>changeView("Settings")}/>
             {liveMetrics.length?<section className="metrics-row">
               {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => <article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
             </section>:<section className="panel full-panel empty-analytics"><BarChart3 size={28}/><h2>Insufficient analytics data</h2><p>No verified X snapshots are available in the selected range yet.</p></section>}
-
-            <GrowthPlanPanel plan={growthPlan} dataSource={dataSource} aiAvailability={aiAvailability} onCreateDraft={(idea)=>openComposer({ text: idea.hook, idea })} onGenerateAi={(idea)=>void generateAiDraftFromIdea(idea)} onReply={setSelectedReply} onOpenDiscover={()=>changeView("Discover")} onConnect={()=>changeView("Settings")}/>
 
             <section className="overview-grid">
               <article className="panel growth-panel">
@@ -523,14 +537,14 @@ export default function HomePage() {
             </section>
           </>}
 
-          {view === "Discover" && <DiscoverView signals={filteredSignals} opportunities={filteredOpportunities} source={dataSource} syncing={syncing} error={syncError} lastSync={lastSync} onSync={()=>void syncFromX(true)} onConnect={() => changeView("Settings")} onReply={setSelectedReply} onCreate={(signal) => {void sendFeedback("idea",signal.topic,1,signal);openComposer(signal.hook)}} onFeedback={(signal,vote)=>void sendFeedback("idea",signal.topic,vote,signal)}/>}
+          {view === "Discover" && <DiscoverView signals={filteredSignals} opportunities={filteredOpportunities} source={dataSource} syncing={syncing} error={syncError} lastSync={lastSync} onSync={()=>void syncFromX(true)} onConnect={() => changeView("Settings")} onReply={setSelectedReply} onCreate={(signal) => {void sendFeedback("idea",signal.topic,1,signal);openComposer({parts:[signal.hook],topic:signal.topic,generated:false})}} onFeedback={(signal,vote)=>void sendFeedback("idea",signal.topic,vote,signal)}/>}
           {view === "Content" && <section className="panel full-panel"><ContentTable items={visibleContent} filter={contentFilter} onFilter={setContentFilter} onCreate={() => openComposer()} onPublish={publishPost}/></section>}
           {view === "Schedule" && <ScheduleView items={content.filter((item) => item.status === "Scheduled")} onCreate={() => openComposer()} postingTimes={dataSource==="live"?analytics?.postingTimes:undefined}/>}
           {view === "Analytics" && <AnalyticsView range={range} setRange={changeRange} data={dataSource==="live"?analytics:undefined}/>}
           </>}
         </div>
       </section>
-      {composer && <Composer key={composerKey} launch={composerLaunch} csrf={csrf} evergreenEnabled={runtimeConfig.evergreenEnabled} aiContentApproved={runtimeConfig.aiContentApproved} onClose={() => { setComposer(false); setComposerLaunch(undefined); }} onSave={savePost}/>}
+      {composerSeed && <Composer seed={composerSeed} csrf={csrf} evergreenEnabled={runtimeConfig.evergreenEnabled} onClose={() => setComposerSeed(null)} onOpenSettings={()=>{setComposerSeed(null);changeView("Settings")}} onSave={savePost}/>}
       {selectedReply && <ReplyComposer opportunity={selectedReply} live={dataSource === "live"} csrf={csrf} aiRepliesApproved={runtimeConfig.aiRepliesApproved} onFeedback={(vote)=>void sendFeedback("reply",selectedReply.id,vote,selectedReply)} onClose={() => setSelectedReply(undefined)}/>}
       {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); changeView("Settings"); }}/>}
     </main>

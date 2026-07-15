@@ -14,10 +14,12 @@ function fixtureTransport(providerStatus:number|undefined,syncStatus:number|unde
         {id:"feed-owner",author_id:"owner",text:"Owner-only private product vocabulary",created_at:"2026-07-13T08:30:00.000Z",public_metrics:{like_count:2,retweet_count:0,reply_count:0,impression_count:50}},
         {id:"feed-1",author_id:"u1",text:"Agentic product evaluation in Italian teams",created_at:"2026-07-13T08:00:00.000Z",public_metrics:{like_count:20,retweet_count:2,reply_count:3,impression_count:500}},
         {id:"feed-2",author_id:"u2",text:"Open source distribution per startup europee",created_at:"2026-07-13T07:00:00.000Z",public_metrics:{like_count:15,retweet_count:1,reply_count:2,impression_count:300}},
+        {id:"feed-3",author_id:"u3",text:"Agentic product evaluation gives startup teams a better feedback loop",created_at:"2026-07-13T06:30:00.000Z",public_metrics:{like_count:12,retweet_count:1,reply_count:1,impression_count:250}},
       ],
       includes:{users:[
         {id:"u1",name:"Fixture Builder",username:"fixture_builder",public_metrics:{followers_count:1_000}},
         {id:"u2",name:"Fixture Founder",username:"fixture_founder",public_metrics:{followers_count:800}},
+        {id:"u3",name:"Fixture Operator",username:"fixture_operator",public_metrics:{followers_count:600}},
       ]},
     }) as XTransportResult<T>;
     if(input.path.includes("/2/users/owner/tweets"))return ok({data:[

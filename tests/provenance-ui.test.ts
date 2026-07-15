@@ -73,12 +73,15 @@ test("Settings separates authoritative runtime state from a collapsed setup refe
   assert.match(setupReference,/AI_MODEL=gpt-4o-mini/);
 });
 
-test("overview growth plan uses loaded discovery data without hidden sync or AI calls", () => {
-  assert.match(page,/Today&apos;s Growth Plan/);
-  assert.match(page,/buildGrowthPlan\(\{ dataSource, connected, ideas: signalData, opportunities: opportunityData \}\)/);
-  assert.match(page,/No hidden sync or AI calls on open/);
-  assert.match(page,/Create draft/);
-  assert.match(page,/Generate with AI/);
-  assert.match(page,/userFacingAiError/);
-  assert.match(page,/aiDraftAvailability/);
+test("overview growth plan uses loaded discovery data and user-initiated AI only", () => {
+  const plan=page.slice(page.indexOf("function TodaysGrowthPlan"),page.indexOf("function Progress"));
+  assert.match(page,/ideas=\{signalData\}/);
+  assert.match(page,/opportunities=\{opportunityData\}/);
+  assert.match(plan,/buildGrowthPlan\(ideas,opportunities\)/);
+  assert.match(plan,/inFlight=useRef\(false\)/);
+  assert.match(plan,/Create draft/);
+  assert.match(plan,/Generate with AI/);
+  assert.match(plan,/kind:selectedFormat/);
+  assert.match(plan,/Connect X for a live plan/);
+  assert.doesNotMatch(plan,/kind:\"draft\"/);
 });
