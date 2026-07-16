@@ -46,6 +46,34 @@ export function resolveWorkspaceState(input: WorkspaceStateInput): WorkspaceStat
   return input.hasLiveData ? "live" : "connected-insufficient";
 }
 
+type LivePlanningDataInput = {
+  hasAccountProfile: boolean;
+  ideaCount: number;
+  replyOpportunityCount: number;
+  analyticsStatus?: "available" | "insufficient_data";
+};
+
+export function hasLivePlanningData(input: LivePlanningDataInput) {
+  // An account profile proves connection identity, not that planning data is ready.
+  return input.ideaCount > 0 || input.replyOpportunityCount > 0 || input.analyticsStatus === "available";
+}
+
+export function isAiContentReady(input: { aiConfigured: boolean; aiContentApproved: boolean }) {
+  return input.aiConfigured && input.aiContentApproved;
+}
+
+export function growthPlanEmptyGuidance(kind: "content" | "replies") {
+  return kind === "content"
+    ? {
+        title: "No content recommendation yet",
+        body: "Open Discover and run a read-only sync to load ranked ideas. Any reply opportunities stay available.",
+      }
+    : {
+        title: "No reply opportunities yet",
+        body: "Open Discover and run a read-only sync to load ranked conversations. Your content recommendation stays available.",
+      };
+}
+
 export function isWorkspaceBlocking(state: WorkspaceState): state is "loading" | "configured-disconnected" {
   return state === "loading" || state === "configured-disconnected";
 }

@@ -5,6 +5,9 @@ import test from "node:test";
 import {
   aiErrorGuidance,
   decideOnboarding,
+  growthPlanEmptyGuidance,
+  hasLivePlanningData,
+  isAiContentReady,
   isWorkspaceBlocking,
   resolveWorkspaceState,
   sanitizeSyncError,
@@ -61,6 +64,40 @@ test("workspace state is explicit across demo, connection, sync, error, and live
   assert.equal(resolveWorkspaceState({ status: connected, syncing: false, syncError: "", lastSync: "2026-07-13T10:00:00.000Z", hasLiveData: false }), "connected-insufficient");
   assert.equal(resolveWorkspaceState({ status: connected, syncing: false, syncError: "", lastSync: undefined, hasLiveData: true }), "live");
   assert.equal(resolveWorkspaceState({ status: connected, syncing: false, syncError: "", lastSync: "2026-07-13T10:00:00.000Z", hasLiveData: true }), "live");
+});
+
+test("live planning evidence excludes account-only state and preserves verified data through refreshes", () => {
+  const connected = { configured: true, demoMode: false, connected: true };
+  const accountOnly=hasLivePlanningData({hasAccountProfile:true,ideaCount:0,replyOpportunityCount:0,analyticsStatus:"insufficient_data"});
+  assert.equal(accountOnly,false);
+  assert.equal(resolveWorkspaceState({status:connected,syncing:true,syncError:"",hasLiveData:accountOnly}),"connected-syncing");
+  assert.equal(resolveWorkspaceState({status:connected,syncing:false,syncError:"",hasLiveData:accountOnly}),"connected-insufficient");
+
+  const withIdeas=hasLivePlanningData({hasAccountProfile:true,ideaCount:1,replyOpportunityCount:0,analyticsStatus:"insufficient_data"});
+  const withReplies=hasLivePlanningData({hasAccountProfile:true,ideaCount:0,replyOpportunityCount:1,analyticsStatus:"insufficient_data"});
+  const withAnalytics=hasLivePlanningData({hasAccountProfile:true,ideaCount:0,replyOpportunityCount:0,analyticsStatus:"available"});
+  assert.equal(withIdeas,true);
+  assert.equal(withReplies,true);
+  assert.equal(withAnalytics,true);
+  assert.equal(resolveWorkspaceState({status:connected,syncing:true,syncError:"",hasLiveData:withIdeas}),"live-refreshing");
+  assert.equal(resolveWorkspaceState({status:connected,syncing:false,syncError:"X_API_503",hasLiveData:withReplies}),"live-sync-error");
+  assert.equal(resolveWorkspaceState({status:connected,syncing:false,syncError:"",hasLiveData:withAnalytics}),"live");
+});
+
+test("connected empty-plan guidance routes to Discover while preserving partial actions", () => {
+  const content=growthPlanEmptyGuidance("content");
+  const replies=growthPlanEmptyGuidance("replies");
+  assert.match(content.body,/Discover.*read-only sync/i);
+  assert.match(content.body,/reply opportunities stay available/i);
+  assert.match(replies.body,/Discover.*read-only sync/i);
+  assert.match(replies.body,/content recommendation stays available/i);
+});
+
+test("AI content tools require both provider configuration and content approval", () => {
+  assert.equal(isAiContentReady({aiConfigured:false,aiContentApproved:false}),false);
+  assert.equal(isAiContentReady({aiConfigured:true,aiContentApproved:false}),false);
+  assert.equal(isAiContentReady({aiConfigured:false,aiContentApproved:true}),false);
+  assert.equal(isAiContentReady({aiConfigured:true,aiContentApproved:true}),true);
 });
 
 test("only loading and disconnected states block local workspace features", () => {

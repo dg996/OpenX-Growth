@@ -34,7 +34,6 @@ OpenX Growth connects to the official X API, analyzes the accounts you follow an
 - Light and dark themes; actionable notification center.
 - JSON import/export with no credentials included.
 - Optional OpenAI-compatible AI provider using your own API key.
-- A non-persisted Today's Growth Plan that selects one content idea and up to three reply opportunities from data already loaded in the workspace.
 - REST API and local MCP server for agent workflows.
 
 ## Architecture

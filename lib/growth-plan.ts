@@ -5,6 +5,10 @@ export type GrowthPlan = {
   replies: ReplyOpportunity[];
 };
 
+export function buildGrowthPlanDraftSeed(idea: IdeaSignal) {
+  return { parts: [idea.hook], topic: idea.topic, generated: false as const };
+}
+
 export function buildGrowthPlan(
   ideas: IdeaSignal[],
   opportunities: ReplyOpportunity[],

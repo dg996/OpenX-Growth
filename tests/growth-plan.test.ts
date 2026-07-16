@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildGrowthPlan } from "../lib/growth-plan.ts";
+import { buildGrowthPlan, buildGrowthPlanDraftSeed } from "../lib/growth-plan.ts";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth.ts";
 
 function idea(topic: string, score: number): IdeaSignal {
@@ -40,6 +40,7 @@ test("selects the highest-scored idea with a deterministic topic tie-break", () 
   );
 
   assert.equal(plan.content?.topic, "Alpha");
+  assert.deepEqual(plan.replies, []);
 });
 
 test("orders, deduplicates, and limits reply actions deterministically", () => {
@@ -54,6 +55,7 @@ test("orders, deduplicates, and limits reply actions deterministically", () => {
     ],
   );
 
+  assert.equal(plan.content, null);
   assert.deepEqual(plan.replies.map((reply) => reply.id), ["reply-a", "reply-b", "reply-c"]);
 });
 
@@ -69,4 +71,12 @@ test("returns explicit empty actions and does not mutate either input", () => {
 
   assert.deepEqual(ideas, ideasBefore);
   assert.deepEqual(opportunities, opportunitiesBefore);
+});
+
+test("builds a deterministic local draft seed without AI or X work", () => {
+  assert.deepEqual(buildGrowthPlanDraftSeed(idea("Demo topic", 90)), {
+    parts: ["Demo topic hook"],
+    topic: "Demo topic",
+    generated: false,
+  });
 });

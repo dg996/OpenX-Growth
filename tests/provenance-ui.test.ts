@@ -82,6 +82,18 @@ test("overview growth plan uses loaded discovery data and user-initiated AI only
   assert.match(plan,/Create draft/);
   assert.match(plan,/Generate with AI/);
   assert.match(plan,/kind:selectedFormat/);
-  assert.match(plan,/Connect X for a live plan/);
+  assert.match(plan,/buildGrowthPlanDraftSeed\(plan\.content!\)/);
+  assert.match(plan,/Connect X/);
+  assert.match(plan,/growthPlanEmptyGuidance\("content"\)/);
+  assert.match(plan,/growthPlanEmptyGuidance\("replies"\)/);
+  assert.match(plan,/onClick=\{onDiscover\}>Open Discover/);
   assert.doesNotMatch(plan,/kind:\"draft\"/);
+});
+
+test("Composer AI controls use the shared readiness gate and cannot request AI while unavailable", () => {
+  const composer=page.slice(page.indexOf("function Composer"),page.indexOf("function ReplyComposer"));
+  assert.match(composer,/if\(!aiReady\|\|busy\)return/);
+  assert.match(composer,/\{aiReady&&<div className="ai-tools">/);
+  assert.match(page,/aiReady=\{aiReady\}/);
+  assert.match(page,/const aiReady=isAiContentReady\(runtimeConfig\)/);
 });

@@ -35,8 +35,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildChartCoordinates } from "../lib/chart";
-import { buildGrowthPlan } from "../lib/growth-plan";
-import { aiErrorGuidance, decideOnboarding, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
+import { buildGrowthPlan, buildGrowthPlanDraftSeed } from "../lib/growth-plan";
+import { aiErrorGuidance, decideOnboarding, growthPlanEmptyGuidance, hasLivePlanningData, isAiContentReady, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth";
 
 type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Settings";
@@ -174,10 +174,10 @@ function DataSeriesChart({points,label}:{points:Array<{recordedAt:number;value:n
   return <div className="chart-wrap"><div className="chart-y"><span>{maximum.toLocaleString()}</span><span>{minimum.toLocaleString()}</span></div><svg className="growth-chart" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label={label}>{[20,55,90,125,160].map((y)=><line key={y} x1="0" y1={y} x2="640" y2={y} className="grid-line"/>)}<polyline points={coordinates} className="growth-line" fill="none"/></svg><div className="chart-x"><span>{new Date(points[0].recordedAt).toLocaleDateString()}</span><span>{new Date(points.at(-1)!.recordedAt).toLocaleDateString()}</span></div></div>;
 }
 
-function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnabled }: { onClose: () => void; onSave: (post:SavePostInput) => Promise<boolean>; onOpenSettings:()=>void;seed:ComposerSeed; csrf:string;evergreenEnabled:boolean }) {
+function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnabled, aiReady }: { onClose: () => void; onSave: (post:SavePostInput) => Promise<boolean>; onOpenSettings:()=>void;seed:ComposerSeed; csrf:string;evergreenEnabled:boolean;aiReady:boolean }) {
   const [parts,setParts] = useState(seed.parts); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(seed.generated); const [busy,setBusy]=useState(false); const [done,setDone]=useState(false); const [error,setError]=useState("");const [aiError,setAiError]=useState("");
   const updatePart=(index:number,value:string)=>setParts((current)=>current.map((part,position)=>position===index?value:part));
-  const improve=async(kind:string)=>{setBusy(true);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt:`${kind}: ${parts.join("\n---\n")}`});const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){setAiError(failure instanceof Error?failure.message:"")}finally{setBusy(false)}};
+  const improve=async(kind:string)=>{if(!aiReady||busy)return;setBusy(true);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt:`${kind}: ${parts.join("\n---\n")}`});const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){setAiError(failure instanceof Error?failure.message:"")}finally{setBusy(false)}};
   const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(!clean.length||clean.some((part)=>part.length>280))return;setBusy(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setBusy(false);if(ok){setDone(true);setTimeout(onClose,650)}else setError("Could not save this post.")};
   const guidance=aiError?aiErrorGuidance(aiError):null;
   return (
@@ -186,7 +186,7 @@ function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnable
         <header><div><span className="eyebrow">COMPOSE</span><h2>Create a post</h2></div><button className="icon-btn" onClick={onClose}><X size={18}/></button></header>
         <div className="composer-profile"><div className="avatar lime-avatar">YOU</div><div><strong>Your account</strong><span>@connected_account</span></div></div>
         <div className="thread-editor">{parts.map((part,index)=><div className="thread-part" key={index}><span>{index+1}</span><textarea value={part} onChange={(event)=>updatePart(index,event.target.value)} autoFocus={index===0} maxLength={280} placeholder={index===0?"Write your post…":"Continue the thread…"}/><small>{part.length}/280</small>{parts.length>1&&<button onClick={()=>setParts((current)=>current.filter((_,position)=>position!==index))} aria-label={`Remove part ${index+1}`}><X size={13}/></button>}</div>)}</div>
-        <div className="composer-toolbar"><button className="outline-btn" onClick={()=>setParts((current)=>[...current,""])}><Plus size={14}/> Add thread post</button><div className="ai-tools"><button disabled={busy} onClick={()=>improve("Write a stronger hook")}><Sparkles size={14}/> Stronger hook</button><button disabled={busy} onClick={()=>improve("Shorten and clarify")}><Zap size={14}/> Shorten</button><button disabled={busy} onClick={()=>improve("Match my writing voice")}><PenLine size={14}/> Match my voice</button></div></div>
+        <div className="composer-toolbar"><button className="outline-btn" onClick={()=>setParts((current)=>[...current,""])}><Plus size={14}/> Add thread post</button>{aiReady&&<div className="ai-tools"><button disabled={busy} onClick={()=>improve("Write a stronger hook")}><Sparkles size={14}/> Stronger hook</button><button disabled={busy} onClick={()=>improve("Shorten and clarify")}><Zap size={14}/> Shorten</button><button disabled={busy} onClick={()=>improve("Match my writing voice")}><PenLine size={14}/> Match my voice</button></div>}</div>
         <div className="publish-options"><label><input type="checkbox" checked={scheduled} onChange={(event)=>setScheduled(event.target.checked)}/> Schedule</label>{scheduled&&<input type="datetime-local" value={scheduledAt} onChange={(event)=>setScheduledAt(event.target.value)} min={new Date().toISOString().slice(0,16)}/>} {evergreenEnabled&&<><label><input type="checkbox" checked={evergreen} onChange={(event)=>setEvergreen(event.target.checked)}/> Evergreen</label>{evergreen&&<label>Repeat every <input type="number" min="7" value={interval} onChange={(event)=>setInterval(Number(event.target.value))}/> days</label>}</>}</div>
         {generated&&<div className="generated-notice"><Sparkles size={13}/> AI-generated suggestion — review every part before publishing.</div>}{guidance&&<div className="inline-error">{guidance.message}{guidance.openSettings&&<button className="text-btn" onClick={onOpenSettings}>Open Settings</button>}</div>}{error&&<div className="inline-error">{error}</div>}
         <footer><button className="ghost-btn" onClick={onClose}>Cancel</button><button className="primary-btn" onClick={submit} disabled={busy||!parts.some((part)=>part.trim())}>{done?<><Check size={16}/> Saved</>:busy?"Working…":scheduled?<><CalendarDays size={16}/> Schedule</>:<><FileText size={16}/> Save draft</>}</button></footer>
@@ -292,24 +292,26 @@ function WorkspaceStatePanel({state,onSettings}:{state:"loading"|"configured-dis
   return <section className="panel full-panel workspace-state" role="status"><CircleGauge size={28}/><h2>{content.title}</h2><p>{content.body}</p><div>{state==="configured-disconnected"&&<button className="primary-btn" onClick={onSettings}>Open Settings</button>}</div></section>;
 }
 
-function WorkspaceSyncNotice({state,error,onRetry,onSettings}:{state:WorkspaceState;error:string;onRetry:()=>void;onSettings:()=>void}) {
+function WorkspaceSyncNotice({state,error,onRetry,onSettings,onDiscover}:{state:WorkspaceState;error:string;onRetry:()=>void;onSettings:()=>void;onDiscover:()=>void}) {
   if(state==="unconfigured-demo"||state==="live"||isWorkspaceBlocking(state))return null;
   if(state==="connected-syncing"||state==="live-refreshing")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>{state==="live-refreshing"?"Refreshing X data":"First X sync in progress"}</strong><span>{state==="live-refreshing"?"Existing verified data stays available while the read-only refresh runs.":"Local features stay available while OpenX loads the first verified snapshots."}</span></div></section>;
-  if(state==="connected-insufficient")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>No verified X data yet</strong><span>Drafts and schedules remain available. Run a read-only sync to populate discovery and analytics.</span></div><button className="outline-btn" onClick={onRetry}>Sync now</button></section>;
+  if(state==="connected-insufficient")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>No verified X data yet</strong><span>Open Discover when you are ready to run a read-only sync. Drafts and schedules remain available.</span></div><button className="outline-btn" onClick={onDiscover}>Open Discover</button></section>;
   const guidance=syncErrorGuidance(error);
   return <section className="workspace-sync-notice error" role="alert"><CircleGauge size={17}/><div><strong>{guidance.title}</strong><span>{guidance.body}</span></div>{guidance.retryable&&<button className="outline-btn" onClick={onRetry}>Retry sync</button>}<button className="outline-btn" onClick={onSettings}>Open Settings</button></section>;
 }
 
-function TodaysGrowthPlan({ideas,opportunities,source,aiReady,csrf,onCreate,onReply,onSettings}:{ideas:IdeaSignal[];opportunities:ReplyOpportunity[];source:"demo"|"live";aiReady:boolean;csrf:string;onCreate:(seed:ComposerSeed)=>void;onReply:(opportunity:ReplyOpportunity)=>void;onSettings:()=>void}) {
+function TodaysGrowthPlan({ideas,opportunities,source,aiReady,csrf,onCreate,onReply,onSettings,onDiscover}:{ideas:IdeaSignal[];opportunities:ReplyOpportunity[];source:"demo"|"live";aiReady:boolean;csrf:string;onCreate:(seed:ComposerSeed)=>void;onReply:(opportunity:ReplyOpportunity)=>void;onSettings:()=>void;onDiscover:()=>void}) {
   const plan=useMemo(()=>buildGrowthPlan(ideas,opportunities),[ideas,opportunities]);
   const [format,setFormat]=useState<"post"|"thread">("post");
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const inFlight=useRef(false);
   const guidance=error?aiErrorGuidance(error):null;
+  const contentEmpty=growthPlanEmptyGuidance("content");
+  const repliesEmpty=growthPlanEmptyGuidance("replies");
 
   const generate=async()=>{
-    if(inFlight.current||!plan.content)return;
+    if(inFlight.current||!aiReady||!plan.content)return;
     const selectedIdea=plan.content;
     const selectedFormat=format;
     inFlight.current=true;setBusy(true);setError("");
@@ -336,20 +338,20 @@ function TodaysGrowthPlan({ideas,opportunities,source,aiReady,csrf,onCreate,onRe
           <p className="growth-plan-rationale">{plan.content.rationale}</p>
           <div className="growth-plan-provenance"><span>Algorithm: {plan.content.algorithmVersion??(source==="demo"?"demo sample":"not available")}</span><DataBadge source={plan.content.scoreProvenance.source}/></div>
           {source==="demo"
-            ? <div className="growth-plan-actions"><button className="primary-btn" onClick={onSettings}><Link2 size={14}/> Connect X for a live plan</button></div>
+            ? <div className="growth-plan-actions"><button className="outline-btn" onClick={()=>onCreate(buildGrowthPlanDraftSeed(plan.content!))}><PenLine size={14}/> Create draft</button><button className="primary-btn" onClick={onSettings}><Link2 size={14}/> Connect X</button></div>
             : <div className="growth-plan-actions">
-                <button className="outline-btn" onClick={()=>onCreate({parts:[plan.content!.hook],topic:plan.content!.topic,generated:false})}><PenLine size={14}/> Create draft</button>
+                <button className="outline-btn" onClick={()=>onCreate(buildGrowthPlanDraftSeed(plan.content!))}><PenLine size={14}/> Create draft</button>
                 {aiReady?<>
                   <div className="growth-plan-formats" role="group" aria-label="AI draft format"><button aria-pressed={format==="post"} disabled={busy} onClick={()=>setFormat("post")}>Post</button><button aria-pressed={format==="thread"} disabled={busy} onClick={()=>setFormat("thread")}>Thread</button></div>
                   <button className="primary-btn" onClick={()=>void generate()} disabled={busy}><Sparkles size={14}/> {busy?"Generating…":"Generate with AI"}</button>
                 </>:<div className="growth-plan-ai-off"><span>AI drafting is off</span><button className="text-btn" onClick={onSettings}>Open Settings</button></div>}
               </div>}
           {guidance&&<div className="inline-error growth-plan-error" role="alert">{guidance.message}{guidance.openSettings&&<button className="text-btn" onClick={onSettings}>Open Settings</button>}</div>}
-        </>:<div className="growth-plan-empty">No content recommendation yet</div>}
+        </>:<div className="growth-plan-empty"><strong>{contentEmpty.title}</strong><p>{contentEmpty.body}</p><button className="outline-btn" onClick={onDiscover}>Open Discover</button></div>}
       </section>
       <section className="growth-plan-replies" aria-label="Reply actions">
         <span className="eyebrow">ENGAGE</span>
-        {plan.replies.length?plan.replies.map((reply)=><article className="growth-plan-reply" key={reply.id}><div><strong>{reply.name}<small>{reply.handle}</small></strong><p>{reply.post}</p><span>{reply.relevance}% relevance · {reply.reason}</span></div>{source==="live"&&<button className="outline-btn" onClick={()=>onReply(reply)}><MessageCircle size={14}/> Reply</button>}</article>):<div className="growth-plan-empty">No reply opportunities yet</div>}
+        {plan.replies.length?plan.replies.map((reply)=><article className="growth-plan-reply" key={reply.id}><div><strong>{reply.name}<small>{reply.handle}</small></strong><p>{reply.post}</p><span>{reply.relevance}% relevance · {reply.reason}</span></div>{source==="live"&&<button className="outline-btn" onClick={()=>onReply(reply)}><MessageCircle size={14}/> Reply</button>}</article>):<div className="growth-plan-empty"><strong>{repliesEmpty.title}</strong><p>{repliesEmpty.body}</p><button className="outline-btn" onClick={onDiscover}>Open Discover</button></div>}
       </section>
     </div>
   </section>;
@@ -447,7 +449,8 @@ export default function HomePage() {
 
   const changeView = (next: View) => { setView(next); setSearch(""); };
   const dataSource:"demo"|"live"=runtimeConfig.demoMode?"demo":"live";
-  const hasLiveData=Boolean(opportunityData.length>0||signalData.length>0||analytics?.dataStatus==="available");
+  const aiReady=isAiContentReady(runtimeConfig);
+  const hasLiveData=hasLivePlanningData({hasAccountProfile:Boolean(account),ideaCount:signalData.length,replyOpportunityCount:opportunityData.length,analyticsStatus:analytics?.dataStatus});
   const workspaceState=resolveWorkspaceState({status:statusLoaded?{configured:runtimeConfig.configured,demoMode:runtimeConfig.demoMode,connected}:null,syncing,syncError,lastSync,hasLiveData});
   const changeRange=(next:string)=>{setRange(next);if(dataSource==="live")void loadAnalytics(next)};
   const toggleTheme = () => {
@@ -506,9 +509,9 @@ export default function HomePage() {
             : isWorkspaceBlocking(workspaceState)
               ? <WorkspaceStatePanel state={workspaceState} onSettings={()=>changeView("Settings")}/>
               : <>
-          <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX(true)} onSettings={()=>changeView("Settings")}/>
+          <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX(true)} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")}/>
           {view === "Overview" && <>
-            <TodaysGrowthPlan ideas={signalData} opportunities={opportunityData} source={dataSource} aiReady={runtimeConfig.aiConfigured&&runtimeConfig.aiContentApproved} csrf={csrf} onCreate={openComposer} onReply={setSelectedReply} onSettings={()=>changeView("Settings")}/>
+            <TodaysGrowthPlan ideas={signalData} opportunities={opportunityData} source={dataSource} aiReady={aiReady} csrf={csrf} onCreate={openComposer} onReply={setSelectedReply} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")}/>
             {liveMetrics.length?<section className="metrics-row">
               {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => <article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
             </section>:<section className="panel full-panel empty-analytics"><BarChart3 size={28}/><h2>Insufficient analytics data</h2><p>No verified X snapshots are available in the selected range yet.</p></section>}
@@ -544,7 +547,15 @@ export default function HomePage() {
           </>}
         </div>
       </section>
-      {composerSeed && <Composer seed={composerSeed} csrf={csrf} evergreenEnabled={runtimeConfig.evergreenEnabled} onClose={() => setComposerSeed(null)} onOpenSettings={()=>{setComposerSeed(null);changeView("Settings")}} onSave={savePost}/>}
+      {composerSeed && <Composer
+        seed={composerSeed}
+        csrf={csrf}
+        evergreenEnabled={runtimeConfig.evergreenEnabled}
+        aiReady={aiReady}
+        onClose={() => setComposerSeed(null)}
+        onOpenSettings={()=>{setComposerSeed(null);changeView("Settings")}}
+        onSave={savePost}
+      />}
       {selectedReply && <ReplyComposer opportunity={selectedReply} live={dataSource === "live"} csrf={csrf} aiRepliesApproved={runtimeConfig.aiRepliesApproved} onFeedback={(vote)=>void sendFeedback("reply",selectedReply.id,vote,selectedReply)} onClose={() => setSelectedReply(undefined)}/>}
       {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); changeView("Settings"); }}/>}
     </main>
