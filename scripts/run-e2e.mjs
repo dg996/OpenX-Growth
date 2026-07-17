@@ -221,9 +221,6 @@ try{
   process.stdout.write("E2E schema health fixtures: passed\n");
   await run(process.execPath,["--test","tests/e2e-session-health.test.mjs"],{env:safeEnv({E2E_REFRESH_SUCCESS_URL:instances[8].appUrl,E2E_REFRESH_REJECT_URL:instances[9].appUrl,E2E_NO_REFRESH_URL:instances[10].appUrl,E2E_APP_ACCESS_TOKEN:accessToken})});
   process.stdout.write("E2E authorization health fixtures: passed\n");
-  if(process.env.OPENX_E2E_BROWSER_HOLD==="1"){
-    process.stdout.write(`E2E browser fixtures: ai=${instances[4].appUrl} no-ai=${instances[2].appUrl}\n`);
-    await new Promise((resolveHold)=>{process.once("SIGINT",resolveHold);process.once("SIGTERM",resolveHold);});
   }
 }catch(error){
   for(const instance of instances)process.stderr.write(instance.logs());
