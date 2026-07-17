@@ -9,7 +9,11 @@ export const aiGenerationRequestSchema = z.object({
   kind: z.enum(["idea", "post", "thread", "reply", "rewrite"]),
   prompt: z.string().trim().min(1).max(4_000),
   context: z.string().max(4_000).optional(),
-}).strict();
+}).strict().superRefine((input, context) => {
+  if (input.kind === "rewrite" && !input.context?.trim()) {
+    context.addIssue({ code: "custom", path: ["context"], message: "Rewrite source is required" });
+  }
+});
 
 export type AiGenerationRequest = z.infer<typeof aiGenerationRequestSchema>;
 export type AiGenerationResult = {
@@ -59,6 +63,20 @@ function invalidResponse(): never {
   throw new AiGenerationError("AI_INVALID_RESPONSE", 502);
 }
 
+const nonCopyPatterns = [
+  /^(?:please\s+)?(?:provide|share|paste|send)(?:\s+me)?\s+(?:the|your|a)\s+(?:original|source|draft|post|text|copy|opening|hook)\b/i,
+  /^(?:could|can|would)\s+you\s+(?:provide|share|paste|send)\b/i,
+  /^(?:i|we)\s+need\s+(?:the|more|some)\s+(?:context|original|source|draft|text)\b/i,
+  /^(?:i (?:can(?:not|'t)|am unable to)|sorry\b).{0,80}\b(?:assist|help|comply|rewrite|provide|generate)\b/i,
+  /^(?:here(?:'s| is)\s+(?:the|a|your)\s+(?:rewrite|rewritten|shortened|stronger)|rewrite|rewritten(?:\s+copy)?|output|suggestion|rationale|metadata|assistant(?: response)?)[\s:—-]/i,
+  /^[{[]\s*"(?:instruction|metadata|rationale|request|response)"\s*:/i,
+];
+
+export function isAiReplacementCopy(content: string) {
+  const text = content.trim();
+  return text.length > 0 && !nonCopyPatterns.some((pattern) => pattern.test(text));
+}
+
 function parseProviderResult(kind: AiGenerationRequest["kind"], body: string): AiGenerationResult {
   let envelope: unknown;
   try {
@@ -79,6 +97,8 @@ function parseProviderResult(kind: AiGenerationRequest["kind"], body: string): A
 
   const parsedSuggestion = (kind === "thread" ? threadSuggestionSchema : singleSuggestionSchema).safeParse(suggestion);
   if (!parsedSuggestion.success) return invalidResponse();
+  const parts = Array.isArray(parsedSuggestion.data.content) ? parsedSuggestion.data.content : [parsedSuggestion.data.content];
+  if (parts.some((part) => !isAiReplacementCopy(part))) return invalidResponse();
   return {
     content: parsedSuggestion.data.content,
     rationale: parsedSuggestion.data.rationale,

@@ -6,6 +6,7 @@ import {
   aiErrorGuidance,
   decideOnboarding,
   growthPlanEmptyGuidance,
+  hasAiRewriteSource,
   hasLivePlanningData,
   isAiContentReady,
   isWorkspaceBlocking,
@@ -100,6 +101,12 @@ test("AI content tools require both provider configuration and content approval"
   assert.equal(isAiContentReady({aiConfigured:true,aiContentApproved:true}),true);
 });
 
+test("AI rewrite source requires at least one non-whitespace draft part", () => {
+  assert.equal(hasAiRewriteSource([]),false);
+  assert.equal(hasAiRewriteSource(["", " \n\t "]),false);
+  assert.equal(hasAiRewriteSource(["", "Draft text"]),true);
+});
+
 test("only loading and disconnected states block local workspace features", () => {
   assert.equal(isWorkspaceBlocking("loading"), true);
   assert.equal(isWorkspaceBlocking("configured-disconnected"), true);
@@ -128,6 +135,10 @@ test("sync errors are reduced to the public operational allowlist", () => {
 });
 
 test("AI failures become friendly guidance without exposing provider details", () => {
+  const source=aiErrorGuidance("AI_SOURCE_REQUIRED");
+  assert.equal(source.openSettings,false);
+  assert.equal(source.message,"Write or paste the text you want to rewrite first.");
+
   const settings=aiErrorGuidance("AI_NOT_CONFIGURED");
   assert.equal(settings.openSettings,true);
   assert.match(settings.message,/settings/i);

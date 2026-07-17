@@ -5,6 +5,7 @@ import {
   aiGenerationRequestSchema,
   AiGenerationError,
   generateAiSuggestion,
+  isAiReplacementCopy,
 } from "../lib/ai-generation.ts";
 
 const input = { kind: "post" as const, prompt: "Write one complete X post." };
@@ -36,6 +37,26 @@ test("validates strict, bounded client requests", () => {
   assert.equal(aiGenerationRequestSchema.safeParse({ kind: "post", prompt: "Draft", extra: true }).success, false);
   assert.equal(aiGenerationRequestSchema.safeParse({ kind: "post", prompt: "x".repeat(4_001) }).success, false);
   assert.equal(aiGenerationRequestSchema.safeParse({ kind: "post", prompt: "Draft", context: "x".repeat(4_001) }).success, false);
+  assert.equal(aiGenerationRequestSchema.safeParse({ kind: "rewrite", prompt: "Shorten" }).success, false);
+  assert.equal(aiGenerationRequestSchema.safeParse({ kind: "rewrite", prompt: "Shorten", context: "   " }).success, false);
+  assert.equal(aiGenerationRequestSchema.safeParse({ kind: "rewrite", prompt: "Shorten", context: "Source draft" }).success, true);
+});
+
+test("distinguishes replacement copy from guidance, refusals, and metadata", () => {
+  for (const copy of ["A stronger opening with a concrete claim.", "I can't believe this useful result.", "Here's why the small change matters."]) {
+    assert.equal(isAiReplacementCopy(copy), true, copy);
+  }
+  for (const invalid of [
+    "Share the original post or opening line first.",
+    "Could you provide the source text?",
+    "I need more context before rewriting this.",
+    "I can't help rewrite that request.",
+    "Here's the rewritten version: Better copy.",
+    "Metadata: tone=concise",
+    '{"instruction":"Paste the source"}',
+  ]) {
+    assert.equal(isAiReplacementCopy(invalid), false, invalid);
+  }
 });
 
 test("accepts a valid single result, sets generated server-side, and marks source material untrusted", async () => {
@@ -85,6 +106,22 @@ test("rejects malformed JSON, wrong shapes, empty content, and policy-invalid pa
       generate(
         async () => completion({ content: parts, rationale: "Invalid thread" }),
         { input: { kind: "thread", prompt: "Write a thread." } },
+      ),
+      (error: unknown) => error instanceof AiGenerationError && error.code === "AI_INVALID_RESPONSE",
+    );
+  }
+});
+
+test("rejects guidance, refusals, and metadata even when provider JSON is well formed", async () => {
+  for (const content of [
+    "Share the original post or opening line first.",
+    "I cannot help rewrite that request.",
+    "Rationale: This needs more context.",
+  ]) {
+    await assert.rejects(
+      generate(
+        async () => completion({ content, rationale: "Looks structurally valid." }),
+        { input: { kind: "rewrite", prompt: "Shorten the provided draft.", context: "Original fixture draft." } },
       ),
       (error: unknown) => error instanceof AiGenerationError && error.code === "AI_INVALID_RESPONSE",
     );

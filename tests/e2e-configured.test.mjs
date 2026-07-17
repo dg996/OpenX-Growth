@@ -169,7 +169,7 @@ test("configured instance blocks AI until provider and policy flags are set", as
       "x-csrf-token": token,
       cookie: cookies,
     },
-    body: JSON.stringify({ kind: "rewrite", prompt: "Make this sharper" }),
+    body: JSON.stringify({ kind: "rewrite", prompt: "Make this sharper", context: "A valid fixture draft." }),
   });
   assert.equal(ai.response.status, 503);
   assert.equal(ai.body.error, "AI_NOT_CONFIGURED");

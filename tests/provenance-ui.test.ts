@@ -90,9 +90,19 @@ test("overview growth plan uses loaded discovery data and user-initiated AI only
   assert.doesNotMatch(plan,/kind:\"draft\"/);
 });
 
-test("Composer AI controls use the shared readiness gate and cannot request AI while unavailable", () => {
+test("Composer AI controls guard duplicate requests and guide empty-source clicks without requesting AI", () => {
   const composer=page.slice(page.indexOf("function Composer"),page.indexOf("function ReplyComposer"));
-  assert.match(composer,/if\(!aiReady\|\|busy\)return/);
+  assert.match(composer,/if\(!aiReady\|\|aiInFlight\.current\)return/);
+  assert.match(composer,/hasAiRewriteSource\(parts\)/);
+  assert.match(composer,/if\(!context\.trim\(\)\)\{setAiError\("AI_SOURCE_REQUIRED"\);return\}/);
+  assert.equal(composer.match(/disabled=\{saving\|\|activeAi!==null\}/g)?.length,3);
+  assert.doesNotMatch(composer,/ai-source-guidance/);
+  assert.match(composer,/role="alert"/);
+  assert.match(composer,/aiInFlight\.current=true/);
+  assert.match(composer,/new AbortController\(\)/);
+  assert.match(composer,/activeAi===\"Stronger hook\"/);
+  assert.match(composer,/activeAi===\"Shorten\"/);
+  assert.match(composer,/activeAi===\"Match my voice\"/);
   assert.match(composer,/\{aiReady&&<div className="ai-tools">/);
   assert.match(page,/aiReady=\{aiReady\}/);
   assert.match(page,/const aiReady=isAiContentReady\(runtimeConfig\)/);

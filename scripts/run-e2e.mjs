@@ -55,19 +55,29 @@ async function freePort() {
 }
 
 async function startAiFixture(port) {
+  let duplicateRequests=0;
   const server=createServer(async(request,response)=>{
     if(request.method!=="POST"||request.url!=="/v1/chat/completions"){
       response.writeHead(404,{"Content-Type":"application/json"});response.end(JSON.stringify({error:"NOT_FOUND"}));return;
     }
     let body="";
     for await(const chunk of request)body+=String(chunk);
+    if(body.includes("E2E_TIMEOUT")){
+      await new Promise((resolveClose)=>response.once("close",resolveClose));return;
+    }
     if(body.includes("E2E_PROVIDER_FAILURE")){
       response.writeHead(503,{"Content-Type":"text/plain"});response.end("FIXTURE_PRIVATE_PROVIDER_FAILURE");return;
     }
+    if(body.includes("E2E_DELAYED_VALID"))await new Promise((resolveWait)=>setTimeout(resolveWait,3_000));
+    if(body.includes("E2E_DUPLICATE")){duplicateRequests+=1;await new Promise((resolveWait)=>setTimeout(resolveWait,3_000));}
     let content;
     if(body.includes("E2E_VALID_THREAD"))content=JSON.stringify({content:["Fixture thread part one.","Fixture thread part two.","Fixture thread part three."],rationale:"Deterministic thread fixture."});
     else if(body.includes("E2E_MALFORMED_JSON"))content="not-json";
     else if(body.includes("E2E_OVERSIZED_PART"))content=JSON.stringify({content:"x".repeat(281),rationale:"Oversized fixture."});
+    else if(body.includes("E2E_GUIDANCE"))content=JSON.stringify({content:"Share the original post or opening line first.",rationale:"Fixture guidance."});
+    else if(body.includes("E2E_REFUSAL"))content=JSON.stringify({content:"I cannot help rewrite that request.",rationale:"Fixture refusal."});
+    else if(body.includes("E2E_METADATA"))content=JSON.stringify({content:"Metadata: tone=concise",rationale:"Fixture metadata."});
+    else if(body.includes("E2E_DUPLICATE"))content=JSON.stringify({content:duplicateRequests===1?"A single guarded rewrite.":"Duplicate request escaped the guard.",rationale:"Duplicate fixture."});
     else content=JSON.stringify({content:"A deterministic fixture post.",rationale:"Deterministic post fixture."});
     response.writeHead(200,{"Content-Type":"application/json"});
     response.end(JSON.stringify({choices:[{message:{content}}]}));
@@ -177,6 +187,10 @@ try{
   process.stdout.write("E2E publisher recovery fixture: passed\n");
   await run(process.execPath,["--test","tests/e2e-ai.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[4].appUrl,E2E_APP_ACCESS_TOKEN:accessToken})});
   process.stdout.write("E2E AI fixture: passed\n");
+  if(process.env.OPENX_E2E_BROWSER_HOLD==="1"){
+    process.stdout.write(`E2E browser fixtures: ai=${instances[4].appUrl} no-ai=${instances[2].appUrl}\n`);
+    await new Promise((resolveHold)=>{process.once("SIGINT",resolveHold);process.once("SIGTERM",resolveHold);});
+  }
 }catch(error){
   for(const instance of instances)process.stderr.write(instance.logs());
   throw error;

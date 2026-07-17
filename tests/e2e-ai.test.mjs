@@ -28,12 +28,12 @@ async function authenticatedSession() {
   return {token:csrf.body.token,cookies:[authCookies,cookieJar(csrf.response)].filter(Boolean).join("; ")};
 }
 
-async function generate(kind,prompt) {
+async function generate(kind,prompt,context) {
   const {token,cookies}=await authenticatedSession();
   return api("/api/ai/generate",{
     method:"POST",
     headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},
-    body:JSON.stringify({kind,prompt}),
+    body:JSON.stringify({kind,prompt,...(context===undefined?{}:{context})}),
   });
 }
 
@@ -54,6 +54,20 @@ test("malformed and oversized provider suggestions are rejected before reaching 
     assert.equal(result.response.status,502);
     assert.deepEqual(result.body,{error:"AI_INVALID_RESPONSE"});
   }
+});
+
+test("guidance, refusals, and metadata are rejected without replacing source copy",async()=>{
+  for(const marker of ["E2E_GUIDANCE","E2E_REFUSAL","E2E_METADATA"]){
+    const result=await generate("rewrite","Rewrite the provided draft.",marker);
+    assert.equal(result.response.status,502);
+    assert.deepEqual(result.body,{error:"AI_INVALID_RESPONSE"});
+  }
+});
+
+test("provider timeout returns the bounded public timeout error",{timeout:25_000},async()=>{
+  const result=await generate("rewrite","Rewrite the provided draft.","E2E_TIMEOUT");
+  assert.equal(result.response.status,504);
+  assert.deepEqual(result.body,{error:"AI_PROVIDER_TIMEOUT"});
 });
 
 test("provider failures expose one safe error without the provider body or status",async()=>{

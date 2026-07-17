@@ -62,6 +62,10 @@ export function isAiContentReady(input: { aiConfigured: boolean; aiContentApprov
   return input.aiConfigured && input.aiContentApproved;
 }
 
+export function hasAiRewriteSource(parts: string[]) {
+  return parts.some((part) => part.trim().length > 0);
+}
+
 export function growthPlanEmptyGuidance(kind: "content" | "replies") {
   return kind === "content"
     ? {
@@ -122,6 +126,10 @@ const AI_SETTINGS_ERRORS=new Set([
 
 export function aiErrorGuidance(error: unknown) {
   const code=typeof error==="string"?error:"";
+  if(code==="AI_SOURCE_REQUIRED")return {
+    message:"Write or paste the text you want to rewrite first.",
+    openSettings:false,
+  };
   if(AI_SETTINGS_ERRORS.has(code))return {
     message:"AI drafting is off. Review the provider and X approval settings to enable it.",
     openSettings:true,
