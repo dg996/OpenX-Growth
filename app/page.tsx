@@ -38,7 +38,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { buildChartCoordinates } from "../lib/chart";
 import { buildGrowthPlan, buildGrowthPlanDraftSeed } from "../lib/growth-plan";
-import { aiErrorGuidance, decideOnboarding, growthPlanEmptyGuidance, hasLivePlanningData, isAiContentReady, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
+import { aiErrorGuidance, decideOnboarding, growthPlanEmptyGuidance, hasAiRewriteSource, hasLivePlanningData, isAiContentReady, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth";
 
 type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Credits & limits" | "Settings";
@@ -88,6 +88,7 @@ type SyncCachePayload={available:boolean;data?:SyncPayload;cache?:{syncedAt:stri
 type AiPayload={content?:string|string[];rationale?:string;generated?:boolean;error?:string};
 type AiRequest={kind:"idea"|"post"|"thread"|"reply"|"rewrite";prompt:string;context?:string};
 type ComposerSeed={parts:string[];topic?:string;generated:boolean};
+type AiRewriteAction="Stronger hook"|"Shorten"|"Match my voice";
 
 const postStatusLabel=(status:string):PostStatus=>status==="needs_review"?"Needs review":`${status.charAt(0).toUpperCase()}${status.slice(1)}` as PostStatus;
 const localResetLabel=(value?:string)=>{
@@ -113,8 +114,8 @@ async function postXSync(csrf:string,idempotencyKey:string):Promise<SyncPayload>
   return payload;
 }
 
-async function requestAiGeneration(csrf:string,input:AiRequest):Promise<AiPayload&{content:string|string[]}> {
-  const response=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(input)});
+async function requestAiGeneration(csrf:string,input:AiRequest,signal?:AbortSignal):Promise<AiPayload&{content:string|string[]}> {
+  const response=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(input),signal});
   let payload:AiPayload;
   try{payload=await response.json() as AiPayload}catch{throw new Error("AI_INVALID_RESPONSE")}
   const validContent=typeof payload.content==="string"||(Array.isArray(payload.content)&&payload.content.every((part)=>typeof part==="string"));
@@ -196,21 +197,24 @@ function DataSeriesChart({points,label}:{points:Array<{recordedAt:number;value:n
 }
 
 function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnabled, aiReady }: { onClose: () => void; onSave: (post:SavePostInput) => Promise<boolean>; onOpenSettings:()=>void;seed:ComposerSeed; csrf:string;evergreenEnabled:boolean;aiReady:boolean }) {
-  const [parts,setParts] = useState(seed.parts); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(seed.generated); const [busy,setBusy]=useState(false); const [done,setDone]=useState(false); const [error,setError]=useState("");const [aiError,setAiError]=useState("");
+  const [parts,setParts] = useState(seed.parts); const [scheduled,setScheduled]=useState(false); const [scheduledAt,setScheduledAt]=useState(""); const [evergreen,setEvergreen]=useState(false); const [interval,setInterval]=useState(30); const [generated,setGenerated]=useState(seed.generated); const [saving,setSaving]=useState(false); const [activeAi,setActiveAi]=useState<AiRewriteAction|null>(null); const [done,setDone]=useState(false); const [error,setError]=useState("");const [aiError,setAiError]=useState("");
+  const aiInFlight=useRef(false);const aiController=useRef<AbortController|null>(null);const hasSource=hasAiRewriteSource(parts);
+  useEffect(()=>()=>aiController.current?.abort(),[]);
   const updatePart=(index:number,value:string)=>setParts((current)=>current.map((part,position)=>position===index?value:part));
-  const improve=async(kind:string)=>{if(!aiReady||busy)return;setBusy(true);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt:`${kind}: ${parts.join("\n---\n")}`});const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){setAiError(failure instanceof Error?failure.message:"")}finally{setBusy(false)}};
-  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(!clean.length||clean.some((part)=>part.length>280))return;setBusy(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setBusy(false);if(ok){setDone(true);setTimeout(onClose,650)}else setError("Could not save this post.")};
+  const close=()=>{aiController.current?.abort();onClose()};
+  const improve=async(action:AiRewriteAction,prompt:string)=>{if(!aiReady||aiInFlight.current)return;const context=parts.join("\n---\n");if(!context.trim()){setAiError("AI_SOURCE_REQUIRED");return}const controller=new AbortController();aiInFlight.current=true;aiController.current=controller;setActiveAi(action);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt,context},controller.signal);const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){if(!controller.signal.aborted)setAiError(failure instanceof Error?failure.message:"")}finally{if(aiController.current===controller)aiController.current=null;aiInFlight.current=false;setActiveAi(null)}};
+  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(saving||aiInFlight.current||!clean.length||clean.some((part)=>part.length>280))return;setSaving(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setSaving(false);if(ok){setDone(true);setTimeout(close,650)}else setError("Could not save this post.")};
   const guidance=aiError?aiErrorGuidance(aiError):null;
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop" onMouseDown={close}>
       <section className="composer" onMouseDown={(e) => e.stopPropagation()} aria-modal="true" role="dialog">
-        <header><div><span className="eyebrow">COMPOSE</span><h2>Create a post</h2></div><button className="icon-btn" onClick={onClose}><X size={18}/></button></header>
+        <header><div><span className="eyebrow">COMPOSE</span><h2>Create a post</h2></div><button className="icon-btn" onClick={close}><X size={18}/></button></header>
         <div className="composer-profile"><div className="avatar lime-avatar">YOU</div><div><strong>Your account</strong><span>@connected_account</span></div></div>
-        <div className="thread-editor">{parts.map((part,index)=><div className="thread-part" key={index}><span>{index+1}</span><textarea value={part} onChange={(event)=>updatePart(index,event.target.value)} autoFocus={index===0} maxLength={280} placeholder={index===0?"Write your post…":"Continue the thread…"}/><small>{part.length}/280</small>{parts.length>1&&<button onClick={()=>setParts((current)=>current.filter((_,position)=>position!==index))} aria-label={`Remove part ${index+1}`}><X size={13}/></button>}</div>)}</div>
-        <div className="composer-toolbar"><button className="outline-btn" onClick={()=>setParts((current)=>[...current,""])}><Plus size={14}/> Add thread post</button>{aiReady&&<div className="ai-tools"><button disabled={busy} onClick={()=>improve("Write a stronger hook")}><Sparkles size={14}/> Stronger hook</button><button disabled={busy} onClick={()=>improve("Shorten and clarify")}><Zap size={14}/> Shorten</button><button disabled={busy} onClick={()=>improve("Match my writing voice")}><PenLine size={14}/> Match my voice</button></div>}</div>
+        <div className="thread-editor">{parts.map((part,index)=><div className="thread-part" key={index}><span>{index+1}</span><textarea value={part} onChange={(event)=>updatePart(index,event.target.value)} disabled={activeAi!==null} autoFocus={index===0} maxLength={280} placeholder={index===0?"Write your post…":"Continue the thread…"}/><small>{part.length}/280</small>{parts.length>1&&<button disabled={activeAi!==null} onClick={()=>setParts((current)=>current.filter((_,position)=>position!==index))} aria-label={`Remove part ${index+1}`}><X size={13}/></button>}</div>)}</div>
+        <div className="composer-toolbar"><button className="outline-btn" disabled={activeAi!==null} onClick={()=>setParts((current)=>[...current,""])}><Plus size={14}/> Add thread post</button>{aiReady&&<div className="ai-tools"><button disabled={saving||activeAi!==null} onClick={()=>void improve("Stronger hook","Write a stronger hook for the provided draft.")}><Sparkles size={14}/> {activeAi==="Stronger hook"?"Stronger hook…":"Stronger hook"}</button><button disabled={saving||activeAi!==null} onClick={()=>void improve("Shorten","Shorten and clarify the provided draft.")}><Zap size={14}/> {activeAi==="Shorten"?"Shorten…":"Shorten"}</button><button disabled={saving||activeAi!==null} onClick={()=>void improve("Match my voice","Match the provided draft to my writing voice.")}><PenLine size={14}/> {activeAi==="Match my voice"?"Match my voice…":"Match my voice"}</button></div>}</div>
         <div className="publish-options"><label><input type="checkbox" checked={scheduled} onChange={(event)=>setScheduled(event.target.checked)}/> Schedule</label>{scheduled&&<input type="datetime-local" value={scheduledAt} onChange={(event)=>setScheduledAt(event.target.value)} min={new Date().toISOString().slice(0,16)}/>} {evergreenEnabled&&<><label><input type="checkbox" checked={evergreen} onChange={(event)=>setEvergreen(event.target.checked)}/> Evergreen</label>{evergreen&&<label>Repeat every <input type="number" min="7" value={interval} onChange={(event)=>setInterval(Number(event.target.value))}/> days</label>}</>}</div>
-        {generated&&<div className="generated-notice"><Sparkles size={13}/> AI-generated suggestion — review every part before publishing.</div>}{guidance&&<div className="inline-error">{guidance.message}{guidance.openSettings&&<button className="text-btn" onClick={onOpenSettings}>Open Settings</button>}</div>}{error&&<div className="inline-error">{error}</div>}
-        <footer><button className="ghost-btn" onClick={onClose}>Cancel</button><button className="primary-btn" onClick={submit} disabled={busy||!parts.some((part)=>part.trim())}>{done?<><Check size={16}/> Saved</>:busy?"Working…":scheduled?<><CalendarDays size={16}/> Schedule</>:<><FileText size={16}/> Save draft</>}</button></footer>
+        {generated&&<div className="generated-notice"><Sparkles size={13}/> AI-generated suggestion — review every part before publishing.</div>}{guidance&&<div className="inline-error" role="alert">{guidance.message}{guidance.openSettings&&<button className="text-btn" onClick={onOpenSettings}>Open Settings</button>}</div>}{error&&<div className="inline-error">{error}</div>}
+        <footer><button className="ghost-btn" onClick={close}>Cancel</button><button className="primary-btn" onClick={submit} disabled={saving||activeAi!==null||!hasSource}>{done?<><Check size={16}/> Saved</>:saving?"Saving…":scheduled?<><CalendarDays size={16}/> Schedule</>:<><FileText size={16}/> Save draft</>}</button></footer>
       </section>
     </div>
   );
