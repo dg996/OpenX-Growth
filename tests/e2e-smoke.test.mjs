@@ -42,7 +42,7 @@ test("compliance endpoint reports demo posture", async () => {
 });
 
 test("unconfigured demo exposes public reads", async () => {
-  for (const path of ["/api/posts", "/api/analytics", "/api/data/export", "/api/feedback", "/api/security/csrf"]) {
+  for (const path of ["/api/posts", "/api/analytics", "/api/data/export", "/api/feedback", "/api/security/csrf", "/api/x/sync"]) {
     const result = await api(path);
     assert.equal(result.response.status, 200, path);
   }
@@ -79,7 +79,7 @@ test("unconfigured demo rejects every application mutation", async () => {
     ["/api/ai/generate", "POST"],
     ["/api/x/reply", "POST"],
     ["/api/x/disconnect", "POST"],
-    ["/api/x/sync", "GET"],
+    ["/api/x/sync", "POST"],
     ["/api/cron/publish", "POST"],
   ];
   for (const [path, method] of cases) {

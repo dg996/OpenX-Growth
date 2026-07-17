@@ -30,13 +30,13 @@ test("an existing X connection completes onboarding without opening it", () => {
   });
 });
 
-test("dismissed onboarding remains closed while a first-time disconnected user sees it", () => {
+test("onboarding remains user-triggered for disconnected users", () => {
   assert.deepEqual(decideOnboarding({ statusLoaded: true, connected: false, dismissed: true }), {
     open: false,
     persistComplete: false,
   });
   assert.deepEqual(decideOnboarding({ statusLoaded: true, connected: false, dismissed: false }), {
-    open: true,
+    open: false,
     persistComplete: false,
   });
 });
@@ -100,10 +100,9 @@ test("AI content tools require both provider configuration and content approval"
   assert.equal(isAiContentReady({aiConfigured:true,aiContentApproved:true}),true);
 });
 
-test("only loading and disconnected states block local workspace features", () => {
+test("only loading blocks the shared status surface", () => {
   assert.equal(isWorkspaceBlocking("loading"), true);
-  assert.equal(isWorkspaceBlocking("configured-disconnected"), true);
-  for (const state of ["unconfigured-demo", "connected-syncing", "connected-sync-error", "connected-insufficient", "live-refreshing", "live-sync-error", "live"] as const) {
+  for (const state of ["unconfigured-demo", "configured-disconnected", "connected-syncing", "connected-sync-error", "connected-insufficient", "live-refreshing", "live-sync-error", "live"] as const) {
     assert.equal(isWorkspaceBlocking(state), false, state);
   }
 });
@@ -111,12 +110,15 @@ test("only loading and disconnected states block local workspace features", () =
 test("resource exhaustion explains the local cap without encouraging a wasteful retry", () => {
   const budget = syncErrorGuidance("DAILY_X_RESOURCE_LIMIT_REACHED");
   assert.equal(budget.retryable, false);
-  assert.match(budget.body, /MAX_DAILY_X_RESOURCES/);
+  assert.equal(budget.manageLimits, true);
+  assert.match(budget.body, /Credits & limits/);
+  assert.match(budget.body, /separate from your paid X Developer Credits/i);
   assert.match(budget.body, /existing verified data remains available/i);
 
   const provider = syncErrorGuidance("X_API_503");
   assert.equal(provider.retryable, true);
-  assert.match(provider.body, /X_API_503/);
+  assert.doesNotMatch(provider.body, /X_API_503/);
+  assert.match(provider.body, /stopped safely/i);
 });
 
 test("sync errors are reduced to the public operational allowlist", () => {

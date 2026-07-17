@@ -9,6 +9,7 @@ import {
   Check,
   ChevronDown,
   CircleGauge,
+  CreditCard,
   Clock3,
   Code2,
   FileText,
@@ -22,6 +23,7 @@ import {
   MoreHorizontal,
   PenLine,
   Plus,
+  RotateCcw,
   Search,
   Send,
   Settings,
@@ -39,7 +41,7 @@ import { buildGrowthPlan, buildGrowthPlanDraftSeed } from "../lib/growth-plan";
 import { aiErrorGuidance, decideOnboarding, growthPlanEmptyGuidance, hasLivePlanningData, isAiContentReady, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth";
 
-type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Settings";
+type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Credits & limits" | "Settings";
 type PostStatus = "Draft" | "Scheduled" | "Publishing" | "Published" | "Failed" | "Needs review";
 
 type ContentItem = {
@@ -55,8 +57,12 @@ type ContentItem = {
 
 type SavePostInput = {text:string;thread:string[];scheduledAt?:number;evergreen:boolean;evergreenIntervalDays:number;generated:boolean;topic?:string;hook?:string};
 type XConfigurationSummary={xClientIdConfigured:boolean;xClientSecretConfigured:boolean;sessionSecretConfigured:boolean;appUrlConfigured:boolean;appAccessTokenConfigured:boolean;cronSecretConfigured:boolean;apiTokenConfigured:boolean};
-type AiConfigurationSummary={provider:"OpenRouter"|"OpenAI"|"Custom OpenAI-compatible";model:string;apiKeyConfigured:boolean;contentApproved:boolean;repliesApproved:boolean};
-type AppRuntimeConfig={configured:boolean;demoMode:boolean;accessProtected:boolean;aiConfigured:boolean;aiContentApproved:boolean;aiRepliesApproved:boolean;evergreenEnabled:boolean;syncTtlSeconds:number;xConfiguration?:XConfigurationSummary;aiConfiguration?:AiConfigurationSummary};
+type AiConfigurationSummary={provider:"OpenRouter"|"OpenAI"|"Custom OpenAI-compatible";model:string;apiKeyConfigured:boolean;contentApproved:boolean;repliesApproved:boolean;state?:"disabled"|"configured_not_approved"|"ready"};
+type AuthorizationState="disconnected"|"connected"|"authorization_check_required"|"reconnect_required"|"oauth_in_progress"|"oauth_failed";
+type RuntimeSync={state:"never"|"ready"|"in_progress"|"succeeded"|"failed"|"budget_exhausted";lastAttemptAt?:number;lastSuccessfulAt?:number;lastErrorCode?:string|null;freshness:"unavailable"|"live"|"cached_fresh"|"cached_stale";cacheAvailable:boolean;activeMaxReadResources?:number;activeMaxRequests?:3|4;next:{enabled:boolean;blockedReason:string|null;maxReadResources:number;maxRequests:3|4;writes:0}};
+type RuntimeUsage={usedResources:number;inUseResources:number;availableResources:number;maxResources:number;maxSyncResources:number;usedWrites:number;availableWrites:number;maxWrites:number;deploymentMaxResources:number;deploymentMaxWrites:number;userConfigured:boolean;resetsAt:string};
+type RuntimeReadiness={overall:"unavailable"|"insufficient"|"partial"|"sufficient";contentRecommendation:string;replyRanking:string;analytics:string;followerHistory:string};
+type AppRuntimeConfig={configured:boolean;demoMode:boolean;accessProtected:boolean;aiConfigured:boolean;aiContentApproved:boolean;aiRepliesApproved:boolean;evergreenEnabled:boolean;syncTtlSeconds:number;usageControlsEnabled?:boolean;xConfiguration?:XConfigurationSummary;aiConfiguration?:AiConfigurationSummary;connected?:boolean;origin?:{configured:boolean;currentMatchesCanonical:boolean};authorization?:{state:AuthorizationState;lastVerifiedAt?:number};sync?:RuntimeSync;usage?:RuntimeUsage;readiness?:RuntimeReadiness};
 type RuntimeStatus=AppRuntimeConfig&{connected:boolean};
 type ProvenanceSource="demo"|"live"|"derived"|"estimate";
 type Provenance={source:ProvenanceSource;recordedAt:number};
@@ -72,22 +78,36 @@ type AnalyticsData={
   };
   followers:{status:"ready"|"insufficient_data";minimumSamples:number;series:Array<{recordedAt:number;followers:Metric<number>}>};
   postingTimes:{status:"ready"|"insufficient_data";minimumSamples:number;sampleSize:number;method:string;suggestions:Array<{hour:number;label:string;sampleSize:number;medianEngagementRate:number;provenance:Provenance}>};
-  usage:{requests:number;resources:number;reservedResources:number;writes:number;maxResources:number;maxWrites:number;remainingResources:number;remainingWrites:number;warning:boolean;reads:number;maxReads:number;provenance:Provenance};
+  usage:{requests:number;resources:number;reservedResources:number;writes:number;maxResources:number;maxSyncResources:number;maxWrites:number;deploymentMaxResources:number;deploymentMaxWrites:number;userConfigured:boolean;remainingResources:number;remainingWrites:number;warning:boolean;reads:number;maxReads:number;provenance:Provenance};
 };
 type AccountProfile={id:string;name:string;username:string;profileImageUrl?:string;followersCount?:number};
 type StoredPost={id:string;text:string;status:string;scheduledAt?:number;publishedAt?:number;evergreen?:boolean;lastError?:string};
 type PostsPayload={posts:StoredPost[]};
-type SyncPayload={account:AccountProfile;opportunities:ReplyOpportunity[];ideas:IdeaSignal[];syncedAt:string;error?:string};
+type SyncPayload={account:AccountProfile;opportunities:ReplyOpportunity[];ideas:IdeaSignal[];syncedAt:string;error?:string;replayed?:boolean};
+type SyncCachePayload={available:boolean;data?:SyncPayload;cache?:{syncedAt:string;freshness:"cached_fresh"|"cached_stale"}};
 type AiPayload={content?:string|string[];rationale?:string;generated?:boolean;error?:string};
 type AiRequest={kind:"idea"|"post"|"thread"|"reply"|"rewrite";prompt:string;context?:string};
 type ComposerSeed={parts:string[];topic?:string;generated:boolean};
 
 const postStatusLabel=(status:string):PostStatus=>status==="needs_review"?"Needs review":`${status.charAt(0).toUpperCase()}${status.slice(1)}` as PostStatus;
+const localResetLabel=(value?:string)=>{
+  const reset=value?new Date(value):null;
+  return reset&&Number.isFinite(reset.getTime())
+    ? reset.toLocaleString([], {weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",timeZoneName:"short"})
+    : "00:00 UTC";
+};
 
 async function fetchAnalyticsData(range="28D"):Promise<AnalyticsData | undefined>{const response=await fetch(`/api/analytics?range=${encodeURIComponent(range)}`);return response.ok?await response.json() as AnalyticsData:undefined}
 
-async function fetchXSync(force=false):Promise<SyncPayload>{
-  const response=await fetch(`/api/x/sync${force?"?force=1":""}`);
+async function fetchXCache():Promise<SyncCachePayload>{
+  const response=await fetch("/api/x/sync");
+  const payload=await response.json() as SyncCachePayload&{error?:string};
+  if(!response.ok)throw new Error(sanitizeSyncError(payload.error));
+  return payload;
+}
+
+async function postXSync(csrf:string,idempotencyKey:string):Promise<SyncPayload>{
+  const response=await fetch("/api/x/sync",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf,"Idempotency-Key":idempotencyKey},body:"{}"});
   const payload=await response.json() as SyncPayload;
   if(!response.ok)throw new Error(sanitizeSyncError(payload.error));
   return payload;
@@ -108,6 +128,7 @@ const navItems = [
   { label: "Content" as View, icon: FileText },
   { label: "Schedule" as View, icon: CalendarDays },
   { label: "Analytics" as View, icon: BarChart3 },
+  { label: "Credits & limits" as View, icon: CreditCard },
 ];
 
 const signals: IdeaSignal[] = [
@@ -256,7 +277,7 @@ const apiSetupSteps = [
   { label: "Authorize X", icon: Link2 },
 ];
 
-function SetupGuide({ onClose, onGoToSettings }: { onClose: () => void; onGoToSettings: () => void }) {
+function SetupGuide({ onClose, onGoToSettings, onGoToCredits }: { onClose: () => void; onGoToSettings: () => void; onGoToCredits: () => void }) {
   const [step, setStep] = useState(0);
   const [origin] = useState(() => (typeof window === "undefined" ? "https://your-domain.com" : window.location.origin));
   const callback = `${origin}/api/x/oauth/callback`;
@@ -270,7 +291,7 @@ function SetupGuide({ onClose, onGoToSettings }: { onClose: () => void; onGoToSe
         <div className="brand"><Logo/><span>OpenX Growth</span></div>
         <div><span className="eyebrow">QUICK START</span><h2>Connect your X API</h2><p>About 5 minutes. You keep control of your credentials and API usage.</p></div>
         <ol>{apiSetupSteps.map(({label,icon:Icon}, index) => <li key={label} className={index === step ? "current" : index < step ? "complete" : ""}><i>{index < step ? <Check size={13}/> : <Icon size={13}/>}</i><span><small>STEP {index+1}</small>{label}</span></li>)}</ol>
-        <div className="byok-note"><Github size={16}/><div><strong>Why bring your own key?</strong><p>The app stays free and open source. X bills API usage directly to your developer account.</p></div></div>
+        <div className="byok-note"><Github size={16}/><div><strong>Why bring your own key?</strong><p>The app stays free and open source. X bills API usage directly to your developer account.</p><button className="text-btn" onClick={onGoToCredits}>Understand credits and local limits</button></div></div>
       </aside>
       <div className="setup-content">
         <header><span className="step-count">{step+1} / {apiSetupSteps.length}</span><button className="icon-btn" onClick={onClose} aria-label="Close setup"><X size={18}/></button></header>
@@ -292,12 +313,40 @@ function WorkspaceStatePanel({state,onSettings}:{state:"loading"|"configured-dis
   return <section className="panel full-panel workspace-state" role="status"><CircleGauge size={28}/><h2>{content.title}</h2><p>{content.body}</p><div>{state==="configured-disconnected"&&<button className="primary-btn" onClick={onSettings}>Open Settings</button>}</div></section>;
 }
 
-function WorkspaceSyncNotice({state,error,onRetry,onSettings,onDiscover}:{state:WorkspaceState;error:string;onRetry:()=>void;onSettings:()=>void;onDiscover:()=>void}) {
-  if(state==="unconfigured-demo"||state==="live"||isWorkspaceBlocking(state))return null;
+function WorkspaceSyncNotice({state,error,onRetry,onSettings,onDiscover,onCredits}:{state:WorkspaceState;error:string;onRetry:()=>void;onSettings:()=>void;onDiscover:()=>void;onCredits:()=>void}) {
+  if(state==="unconfigured-demo"||state==="configured-disconnected"||state==="live"||isWorkspaceBlocking(state))return null;
   if(state==="connected-syncing"||state==="live-refreshing")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>{state==="live-refreshing"?"Refreshing X data":"First X sync in progress"}</strong><span>{state==="live-refreshing"?"Existing verified data stays available while the read-only refresh runs.":"Local features stay available while OpenX loads the first verified snapshots."}</span></div></section>;
   if(state==="connected-insufficient")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>No verified X data yet</strong><span>Open Discover when you are ready to run a read-only sync. Drafts and schedules remain available.</span></div><button className="outline-btn" onClick={onDiscover}>Open Discover</button></section>;
   const guidance=syncErrorGuidance(error);
-  return <section className="workspace-sync-notice error" role="alert"><CircleGauge size={17}/><div><strong>{guidance.title}</strong><span>{guidance.body}</span></div>{guidance.retryable&&<button className="outline-btn" onClick={onRetry}>Retry sync</button>}<button className="outline-btn" onClick={onSettings}>Open Settings</button></section>;
+  return <section className="workspace-sync-notice error" role="alert"><CircleGauge size={17}/><div><strong>{guidance.title}</strong><span>{guidance.body}</span></div>{guidance.retryable&&<button className="outline-btn" onClick={onRetry}>Retry sync</button>}{guidance.manageLimits?<button className="outline-btn" onClick={onCredits}>Open Credits &amp; limits</button>:<button className="outline-btn" onClick={onSettings}>Open Settings</button>}</section>;
+}
+
+function SchemaRecovery({code}:{code:string}) {
+  const outdated=code==="LOCAL_DATABASE_OUTDATED";
+  return <section className="panel full-panel workspace-state" role="alert"><CircleGauge size={28}/><h2>Database setup required</h2><p>{outdated?"The local database schema is outdated.":"The local database is not ready."} Apply the existing D1 migrations through 0003_rainy_juggernaut.sql, restart OpenX, then try again.</p><details><summary>View migration steps</summary><code>npm run db:migrate:local</code><code>npm run db:migrate:remote</code></details></section>;
+}
+
+function XStatusSurface({status,syncing,notice,error,compact=false,onSync,onReconnect,onSettings,onCredits}:{status:AppRuntimeConfig;syncing:boolean;notice?:string;error?:string;compact?:boolean;onSync:()=>void;onReconnect:()=>void;onSettings:()=>void;onCredits:()=>void}) {
+  const authorization=status.authorization?.state??"disconnected",sync=status.sync,usage=status.usage,readiness=status.readiness;
+  const busy=syncing||sync?.state==="in_progress";
+  const originMismatch=status.origin?.configured===true&&!status.origin.currentMatchesCanonical;
+  const budgetBlocked=!busy&&sync?.next.enabled===false;
+  const resetLabel=localResetLabel(usage?.resetsAt);
+  let title="X is ready to connect",body="Authorize the account this instance will use.";
+  if(originMismatch){title="Use the configured OpenX address";body="This address does not match APP_URL, so X authorization was not started.";}
+  else if(authorization==="reconnect_required"){title="Reconnect X";body="OpenX could not renew access. Reconnect keeps your verified data.";}
+  else if(busy){title="Syncing X data";body="Existing local data remains available. No X writes are being made.";}
+  else if(sync?.state==="budget_exhausted"||budgetBlocked){title="OpenX daily safety limit reached";body=`OpenX has counted ${usage?.usedResources??0} of ${usage?.maxResources??0} returned X data items today. This local cap is separate from your paid X Developer Credits.`;}
+  else if(authorization==="authorization_check_required"){title="Authorization needs a check";body="Sync will first try to renew access. No X writes will be made.";}
+  else if(sync?.cacheAvailable){title=readiness?.overall==="sufficient"?"X data is up to date":"Sync complete, limited data";body=readiness?.overall==="sufficient"?`Last synced ${sync.lastSuccessfulAt?new Date(sync.lastSuccessfulAt).toLocaleString():"recently"}.`:"The data is valid, but not every feature has enough evidence yet.";}
+  else if(authorization==="connected"){title="X authorized";body="Review the local read estimate, then sync when ready.";}
+  const canSync=(authorization==="connected"||authorization==="authorization_check_required")&&!busy&&!budgetBlocked;
+  return <section className={`panel x-status-surface ${compact?"compact":"detailed"}`} role="status" aria-labelledby="x-status-heading">
+    <div className="x-status-copy"><span className="eyebrow">X CONNECTION AND SYNC</span><h2 id="x-status-heading" tabIndex={-1}>{title}</h2><p>{body}</p>{notice&&<div className="x-status-alert" role="alert">{notice}</div>}{error&&<div className="x-status-alert" role="alert">{syncErrorGuidance(error).body}</div>}</div>
+    <dl className="x-status-facts"><div><dt>Authorization</dt><dd>{authorization.replaceAll("_"," ")}</dd></div><div><dt>Last successful sync</dt><dd>{sync?.lastSuccessfulAt?new Date(sync.lastSuccessfulAt).toLocaleString():"Never"}</dd></div><div><dt>Data</dt><dd>{sync?.freshness==="cached_stale"?"Cached, may be stale":sync?.cacheAvailable?readiness?.overall==="sufficient"?"Cached":"Limited":"Unavailable"}</dd></div>{usage&&<div><dt>OpenX daily safety cap</dt><dd>{usage.usedResources} of {usage.maxResources} returned data items used · {usage.availableResources} available <button className="inline-link" onClick={onCredits}>Manage</button></dd></div>}{sync&&<div><dt>{busy?"Active sync":budgetBlocked?"Why sync is paused":"Next sync"}</dt><dd>{budgetBlocked?`A complete sync needs at least 11 available data items; ${usage?.availableResources??0} remain.`:`Up to ${busy?(sync.activeMaxReadResources??sync.next.maxReadResources):sync.next.maxReadResources} returned data items · ${busy?(sync.activeMaxRequests??sync.next.maxRequests):sync.next.maxRequests} X API requests · 0 writes`}</dd></div>}</dl>
+    <div className="x-status-actions">{originMismatch?<button className="outline-btn" onClick={onSettings}>Review APP_URL setup</button>:authorization==="reconnect_required"?<button className="primary-btn" onClick={onReconnect} disabled={busy}>Reconnect X</button>:authorization==="disconnected"?<a className={`primary-btn ${!status.configured?"disabled":""}`} href={status.configured?"/api/x/oauth/start":"#"}><Link2 size={15}/> Continue with X</a>:<button className="primary-btn" onClick={onSync} disabled={!canSync} aria-describedby={budgetBlocked?"x-budget-explanation":undefined}>{budgetBlocked?"Sync paused — local limit reached":busy?"Syncing…":authorization==="authorization_check_required"?"Check and sync":sync?.cacheAvailable?"Sync again":"Sync X data"}</button>}{budgetBlocked&&<div className="x-budget-explanation" id="x-budget-explanation"><strong>Not your X Credits balance</strong><span>No additional X API request will be sent while paused. OpenX&apos;s local counter resets automatically every day. Next reset: {resetLabel}.</span><button className="text-btn" onClick={onCredits}>Review limits and credits</button></div>}</div>
+    {busy&&<div className="x-sync-progress" role="status">OpenX sets aside up to {sync?.activeMaxReadResources??sync?.next.maxReadResources??0} reads while this sync runs. Unused capacity becomes available again when it finishes.</div>}
+  </section>;
 }
 
 function TodaysGrowthPlan({ideas,opportunities,source,aiReady,csrf,onCreate,onReply,onSettings,onDiscover}:{ideas:IdeaSignal[];opportunities:ReplyOpportunity[];source:"demo"|"live";aiReady:boolean;csrf:string;onCreate:(seed:ComposerSeed)=>void;onReply:(opportunity:ReplyOpportunity)=>void;onSettings:()=>void;onDiscover:()=>void}) {
@@ -375,7 +424,11 @@ export default function HomePage() {
   const [signalData, setSignalData] = useState<IdeaSignal[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const syncInFlight=useRef(false);
   const [lastSync, setLastSync] = useState<string>();
+  const [schemaError,setSchemaError]=useState<"LOCAL_DATABASE_NOT_INITIALIZED"|"LOCAL_DATABASE_OUTDATED"|"LOCAL_DATABASE_UNAVAILABLE"|"">("");
+  const [loadError,setLoadError]=useState("");
+  const [oauthNotice,setOauthNotice]=useState("");
   const [selectedReply, setSelectedReply] = useState<ReplyOpportunity>();
   const [csrf,setCsrf]=useState("");
   const [runtimeConfig,setRuntimeConfig]=useState<AppRuntimeConfig>({configured:false,demoMode:true,accessProtected:false,aiConfigured:false,aiContentApproved:false,aiRepliesApproved:false,evergreenEnabled:false,syncTtlSeconds:900});
@@ -396,31 +449,31 @@ export default function HomePage() {
   }, [theme, preferencesReady]);
   useEffect(() => {
     void (async()=>{
-      const statusResponse=await fetch("/api/x/status");
-      if(statusResponse.status===401){window.location.href="/login";return}
-      const status=statusResponse.ok?await statusResponse.json() as RuntimeStatus:null;
-      const [csrfResponse,postsResponse,analyticsPayload]=await Promise.all([fetch("/api/security/csrf"),fetch("/api/posts"),fetchAnalyticsData("28D")]);
-      if(csrfResponse.ok)setCsrf(((await csrfResponse.json()) as {token:string}).token);
-      if(postsResponse.ok){const payload=await postsResponse.json() as PostsPayload;setContent(status?.demoMode?initialContent:payload.posts.map((post)=>({id:post.id,text:post.text,status:postStatusLabel(post.status),date:post.scheduledAt?new Date(post.scheduledAt).toLocaleString():post.publishedAt?new Date(post.publishedAt).toLocaleString():"—",evergreen:post.evergreen,lastError:post.lastError})))}
-      if(analyticsPayload)setAnalytics(analyticsPayload);
-      if(status){
+      try{
+        const statusResponse=await fetch("/api/x/status",{cache:"no-store"});
+        if(statusResponse.status===401){window.location.href="/login";return}
+        if(statusResponse.status===503){const failure=await statusResponse.json().catch(()=>({})) as {error?:string};if(failure.error==="LOCAL_DATABASE_NOT_INITIALIZED"||failure.error==="LOCAL_DATABASE_OUTDATED"||failure.error==="LOCAL_DATABASE_UNAVAILABLE"){setSchemaError(failure.error);setRuntimeConfig((current)=>({...current,configured:true,demoMode:false}));}else setLoadError("OpenX could not load this workspace. Retry local loading.");setStatusLoaded(true);return;}
+        if(!statusResponse.ok){setLoadError("OpenX could not load this workspace. Retry local loading.");setStatusLoaded(true);return;}
+        const status=await statusResponse.json() as RuntimeStatus;
+        const [csrfResponse,postsResponse,analyticsPayload,cachePayload]=await Promise.all([fetch("/api/security/csrf"),fetch("/api/posts"),fetchAnalyticsData("28D"),fetchXCache()]);
+        if(csrfResponse.ok)setCsrf(((await csrfResponse.json()) as {token:string}).token);
+        if(postsResponse.ok){const payload=await postsResponse.json() as PostsPayload;setContent(status.demoMode?initialContent:payload.posts.map((post)=>({id:post.id,text:post.text,status:postStatusLabel(post.status),date:post.scheduledAt?new Date(post.scheduledAt).toLocaleString():post.publishedAt?new Date(post.publishedAt).toLocaleString():"—",evergreen:post.evergreen,lastError:post.lastError})))}
+        if(analyticsPayload)setAnalytics(analyticsPayload);
         const isConnected=Boolean(status.connected);
-        const onboarding=decideOnboarding({statusLoaded:true,connected:isConnected,dismissed:localStorage.getItem(ONBOARDING_STORAGE_KEY)==="true"});
+        const hasAuthorizationContext=status.authorization?.state!=="disconnected";
+        const onboarding=decideOnboarding({statusLoaded:true,connected:hasAuthorizationContext,dismissed:localStorage.getItem(ONBOARDING_STORAGE_KEY)==="true"});
         if(onboarding.persistComplete)localStorage.setItem(ONBOARDING_STORAGE_KEY,"true");
         setSetupGuide(onboarding.open);
         setConnected(isConnected);setRuntimeConfig(status);setStatusLoaded(true);
         if(status.demoMode){setOpportunityData(opportunities);setSignalData(signals)}
         else {setOpportunityData([]);setSignalData([])}
-        if(status.connected){
-          setSyncing(true);setSyncError("");
-          try{
-            const payload=await fetchXSync();
-            setAccount(payload.account);setOpportunityData(payload.opportunities);setSignalData(payload.ideas);setLastSync(payload.syncedAt);
-            const refreshedAnalytics=await fetchAnalyticsData("28D");if(refreshedAnalytics)setAnalytics(refreshedAnalytics);
-          }catch(error){setSyncError(sanitizeSyncError(error instanceof Error?error.message:error))}
-          finally{setSyncing(false)}
-        }
-      }
+        if(cachePayload.available&&cachePayload.data){const payload=cachePayload.data;setAccount(payload.account);setOpportunityData(payload.opportunities);setSignalData(payload.ideas);setLastSync(payload.syncedAt);}
+        const query=new URLSearchParams(window.location.search);const connectedResult=query.get("x_connected"),oauthError=query.get("x_error");
+        if(connectedResult==="1")setOauthNotice("X authorized. Review the local read estimate, then sync when ready.");
+        else if(oauthError==="origin_mismatch")setOauthNotice("OpenX cannot start X authorization from this address. Open the address configured as APP_URL.");
+        else if(oauthError)setOauthNotice("X authorization could not be verified. Nothing was replaced.");
+        if(connectedResult||oauthError){query.delete("x_connected");query.delete("x_error");window.history.replaceState({},"",`${window.location.pathname}${query.size?`?${query}`:""}${window.location.hash}`);setTimeout(()=>document.getElementById("x-status-heading")?.focus(),0);}
+      }catch{setLoadError("OpenX could not load this workspace. Retry local loading.");setStatusLoaded(true);}
     })();
   }, []);
 
@@ -430,15 +483,32 @@ export default function HomePage() {
   const publishPost=async(id:string|number)=>{const response=await fetch(`/api/posts/${id}/publish`,{method:"POST",headers:{"X-CSRF-Token":csrf}});await loadPosts();if(response.ok)await loadAnalytics();return response.ok};
   const sendFeedback=async(type:"idea"|"reply",id:string,vote:number,context:unknown)=>{await fetch("/api/feedback",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify({targetType:type,targetId:id,vote,context})})};
 
-  const syncFromX = async (force=false) => {
+  const refreshRuntimeStatus=async()=>{const response=await fetch("/api/x/status",{cache:"no-store"});if(response.ok){const status=await response.json() as RuntimeStatus;setRuntimeConfig(status);setConnected(status.connected);return status}return null};
+  const syncFromX = async () => {
+    if(syncInFlight.current||syncing||!csrf)return;
+    syncInFlight.current=true;
     setSyncing(true); setSyncError("");
     try {
-      const payload=await fetchXSync(force);
+      const payload=await postXSync(csrf,crypto.randomUUID());
       setAccount(payload.account); setOpportunityData(payload.opportunities); setSignalData(payload.ideas); setLastSync(payload.syncedAt); setConnected(true); await loadAnalytics();
     } catch (error) {
       setSyncError(sanitizeSyncError(error instanceof Error?error.message:error));
-    } finally { setSyncing(false); }
+    } finally { await refreshRuntimeStatus();setSyncing(false);syncInFlight.current=false; }
   };
+
+  const reconnectX=async()=>{if(syncing)return;const response=await fetch("/api/x/disconnect",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify({intent:"reconnect"})});if(response.ok){const payload=await response.json() as {next:string};window.location.assign(payload.next)}else setSyncError("X_RECONNECT_REQUIRED")};
+
+  const mutateUsageControls=async(body:Record<string,unknown>,successMessage:string):Promise<UsageControlResult>=>{
+    if(!csrf)return {ok:false,message:"Usage controls are not ready yet. Reload the page and try again."};
+    try{
+      const response=await fetch("/api/x/status",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(body)});
+      if(!response.ok){const failure=await response.json().catch(()=>({})) as {error?:string};return {ok:false,message:failure.error==="SYNC_ALREADY_IN_PROGRESS"?"A sync or another usage change is already running. Try again when it finishes.":"OpenX could not update the local usage controls."};}
+      await Promise.all([refreshRuntimeStatus(),loadAnalytics()]);
+      return {ok:true,message:successMessage};
+    }catch{return {ok:false,message:"OpenX could not update the local usage controls."};}
+  };
+  const resetLocalUsage=()=>mutateUsageControls({intent:"reset_local_usage"},"Today's OpenX counters were reset. Your saved caps and provider balances were not changed.");
+  const saveUsageLimits=(limits:{maxResources:number;maxSyncResources:number;maxWrites:number})=>mutateUsageControls({intent:"set_local_usage_limits",...limits},"Your OpenX safety caps were saved.");
 
   const openComposer = (seed:ComposerSeed={parts:[""],generated:false}) => { setComposerSeed(seed); };
   const dismissOnboarding=()=>{localStorage.setItem(ONBOARDING_STORAGE_KEY,"true");setSetupGuide(false)};
@@ -451,7 +521,9 @@ export default function HomePage() {
   const dataSource:"demo"|"live"=runtimeConfig.demoMode?"demo":"live";
   const aiReady=isAiContentReady(runtimeConfig);
   const hasLiveData=hasLivePlanningData({hasAccountProfile:Boolean(account),ideaCount:signalData.length,replyOpportunityCount:opportunityData.length,analyticsStatus:analytics?.dataStatus});
-  const workspaceState=resolveWorkspaceState({status:statusLoaded?{configured:runtimeConfig.configured,demoMode:runtimeConfig.demoMode,connected}:null,syncing,syncError,lastSync,hasLiveData});
+  const authorizationPresent=runtimeConfig.authorization?.state!=="disconnected"&&runtimeConfig.authorization?.state!==undefined;
+  const syncBusy=syncing||runtimeConfig.sync?.state==="in_progress";
+  const workspaceState=resolveWorkspaceState({status:statusLoaded?{configured:runtimeConfig.configured,demoMode:runtimeConfig.demoMode,connected:connected||authorizationPresent}:null,syncing:syncBusy,syncError,lastSync,hasLiveData});
   const changeRange=(next:string)=>{setRange(next);if(dataSource==="live")void loadAnalytics(next)};
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
@@ -467,7 +539,7 @@ export default function HomePage() {
     {label:"Published posts",value:String(content.filter((item)=>item.status==="Published").length),delta:"stored records",icon:FileText,provenance:{source:"derived" as const,recordedAt:analytics.range.endAt}},
     {label:"Impressions",value:analytics.derived.totals.impressions.value.toLocaleString(),delta:"selected range",icon:CircleGauge,provenance:analytics.derived.totals.impressions.provenance},
     {label:"Engagement rate",value:`${(analytics.derived.totals.engagementRate.value*100).toFixed(2)}%`,delta:"measured impressions",icon:Activity,provenance:analytics.derived.totals.engagementRate.provenance},
-    {label:"X resources",value:`${analytics.usage.resources}/${analytics.usage.maxResources}`,delta:analytics.usage.warning?`Budget low · ${analytics.usage.remainingResources} resources and ${analytics.usage.remainingWrites} writes left`:`${analytics.usage.requests} requests · ${analytics.usage.writes} write attempts`,icon:Target,provenance:analytics.usage.provenance},
+    {label:"OpenX daily safety cap",value:`${analytics.usage.resources}/${analytics.usage.maxResources} items`,delta:analytics.usage.warning?`Local cap reached · ${analytics.usage.remainingResources} data items available today`:`${analytics.usage.requests} X API requests · ${analytics.usage.writes} write attempts · open limits`,icon:Target,provenance:analytics.usage.provenance},
   ]:dataSource==="demo"?metricData:[];
   const notificationItems=[...content.filter((item)=>item.status==="Needs review").slice(0,2).map(()=>({view:"Content" as View,title:"Publishing needs reconciliation",body:"Possible X acceptance was not confirmed locally. Do not retry this post.",time:"Owner review required",icon:Zap})),...content.filter((item)=>item.status==="Failed").slice(0,2).map((item)=>({view:"Content" as View,title:"Publishing failed",body:item.lastError??item.text,time:"Needs attention",icon:Zap})),...content.filter((item)=>item.status==="Scheduled").slice(0,2).map((item)=>({view:"Schedule" as View,title:"Post scheduled",body:item.text,time:item.date,icon:CalendarDays})),...(lastSync?[{view:"Discover" as View,title:"X feed synchronized",body:`Ideas and reply opportunities refreshed from X.`,time:new Date(lastSync).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}),icon:Flame}]:[])];
 
@@ -481,7 +553,7 @@ export default function HomePage() {
         </nav>
         <div className="sidebar-bottom">
           <button className={view === "Settings" ? "active" : ""} onClick={() => changeView("Settings")}><Settings size={18}/><span>Settings</span></button>
-          <div className="workspace">{account?.profileImageUrl?<div className="avatar profile-avatar" style={{backgroundImage:`url(${account.profileImageUrl})`}} aria-label={`${account.name} profile image`}/>:<div className="avatar">{account?.name.slice(0,2).toUpperCase()??"YOU"}</div>}<div><strong>{account?.name??"Personal workspace"}</strong><span>{account?`@${account.username} · X`:connected?"X connected":runtimeConfig.demoMode?"Demo workspace":"X not connected"}</span></div><ChevronDown size={15}/></div>
+          <div className="workspace">{account?.profileImageUrl?<div className="avatar profile-avatar" style={{backgroundImage:`url(${account.profileImageUrl})`}} aria-label={`${account.name} profile image`}/>:<div className="avatar">{account?.name.slice(0,2).toUpperCase()??"YOU"}</div>}<div><strong>{account?.name??"Personal workspace"}</strong><span>{account?`@${account.username} · ${connected?"X":"cached X data"}`:connected?"X connected":runtimeConfig.demoMode?"Demo workspace":"X not connected"}</span></div><ChevronDown size={15}/></div>
         </div>
       </aside>
 
@@ -504,16 +576,19 @@ export default function HomePage() {
         </header>
 
         <div className="page-content">
-          {view==="Settings"
-            ? <SettingsView connected={connected} synced={Boolean(lastSync)} config={runtimeConfig} csrf={csrf} onDisconnected={()=>{setConnected(false);setAccount(undefined);setOpportunityData([]);setSignalData([]);setAnalytics(undefined);setLastSync(undefined);setSyncError("")}} onOpenGuide={() => setSetupGuide(true)}/>
+          {schemaError?<SchemaRecovery code={schemaError}/>:loadError?<section className="panel full-panel workspace-state" role="alert"><CircleGauge size={28}/><h2>OpenX could not load this workspace</h2><p>Retry local loading. No X or AI service was contacted.</p><button className="outline-btn" onClick={()=>window.location.reload()}>Retry local loading</button></section>:view==="Settings"
+            ? <SettingsView connected={connected} synced={Boolean(lastSync)} config={runtimeConfig} csrf={csrf} syncing={syncBusy} syncError={syncError} onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onCredits={()=>changeView("Credits & limits")} onDisconnected={()=>{setConnected(false);setAccount(undefined);setOpportunityData([]);setSignalData([]);setAnalytics(undefined);setLastSync(undefined);setSyncError("");void refreshRuntimeStatus()}} onOpenGuide={() => setSetupGuide(true)}/>
+            : view==="Credits & limits"
+              ? <CreditsLimitsView key={`${runtimeConfig.usage?.maxResources??0}:${runtimeConfig.usage?.maxSyncResources??0}:${runtimeConfig.usage?.maxWrites??0}`} config={runtimeConfig} syncing={syncBusy} onSave={saveUsageLimits} onReset={resetLocalUsage}/>
             : isWorkspaceBlocking(workspaceState)
               ? <WorkspaceStatePanel state={workspaceState} onSettings={()=>changeView("Settings")}/>
               : <>
-          <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX(true)} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")}/>
+          <XStatusSurface status={runtimeConfig} syncing={syncBusy} notice={oauthNotice} error={syncError} compact onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onSettings={()=>changeView("Settings")} onCredits={()=>changeView("Credits & limits")}/>
+          <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX()} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")} onCredits={()=>changeView("Credits & limits")}/>
           {view === "Overview" && <>
             <TodaysGrowthPlan ideas={signalData} opportunities={opportunityData} source={dataSource} aiReady={aiReady} csrf={csrf} onCreate={openComposer} onReply={setSelectedReply} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")}/>
             {liveMetrics.length?<section className="metrics-row">
-              {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => <article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
+              {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => label==="OpenX daily safety cap"?<button className="metric-card metric-card-link" key={label} onClick={()=>changeView("Credits & limits")}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></button>:<article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
             </section>:<section className="panel full-panel empty-analytics"><BarChart3 size={28}/><h2>Insufficient analytics data</h2><p>No verified X snapshots are available in the selected range yet.</p></section>}
 
             <section className="overview-grid">
@@ -540,7 +615,9 @@ export default function HomePage() {
             </section>
           </>}
 
-          {view === "Discover" && <DiscoverView signals={filteredSignals} opportunities={filteredOpportunities} source={dataSource} syncing={syncing} error={syncError} lastSync={lastSync} onSync={()=>void syncFromX(true)} onConnect={() => changeView("Settings")} onReply={setSelectedReply} onCreate={(signal) => {void sendFeedback("idea",signal.topic,1,signal);openComposer({parts:[signal.hook],topic:signal.topic,generated:false})}} onFeedback={(signal,vote)=>void sendFeedback("idea",signal.topic,vote,signal)}/>}
+          {view === "Discover" && (
+            <DiscoverView signals={filteredSignals} opportunities={filteredOpportunities} source={dataSource} syncing={syncBusy} syncEnabled={Boolean(runtimeConfig.sync?.next.enabled)} error={syncError} lastSync={lastSync} onSync={()=>void syncFromX()} onConnect={() => changeView("Settings")} onCredits={()=>changeView("Credits & limits")} onReply={setSelectedReply} onCreate={(signal) => {void sendFeedback("idea",signal.topic,1,signal);openComposer({parts:[signal.hook],topic:signal.topic,generated:false})}} onFeedback={(signal,vote)=>void sendFeedback("idea",signal.topic,vote,signal)}/>
+          )}
           {view === "Content" && <section className="panel full-panel"><ContentTable items={visibleContent} filter={contentFilter} onFilter={setContentFilter} onCreate={() => openComposer()} onPublish={publishPost}/></section>}
           {view === "Schedule" && <ScheduleView items={content.filter((item) => item.status === "Scheduled")} onCreate={() => openComposer()} postingTimes={dataSource==="live"?analytics?.postingTimes:undefined}/>}
           {view === "Analytics" && <AnalyticsView range={range} setRange={changeRange} data={dataSource==="live"?analytics:undefined}/>}
@@ -557,7 +634,7 @@ export default function HomePage() {
         onSave={savePost}
       />}
       {selectedReply && <ReplyComposer opportunity={selectedReply} live={dataSource === "live"} csrf={csrf} aiRepliesApproved={runtimeConfig.aiRepliesApproved} onFeedback={(vote)=>void sendFeedback("reply",selectedReply.id,vote,selectedReply)} onClose={() => setSelectedReply(undefined)}/>}
-      {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); changeView("Settings"); }}/>}
+      {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); changeView("Settings"); }} onGoToCredits={()=>{setSetupGuide(false);changeView("Credits & limits")}}/>}
     </main>
   );
 }
@@ -576,14 +653,78 @@ function OpportunityList({ items, onView, onReply, source }: { items: ReplyOppor
   return <div><div className="panel-header"><div><span className="eyebrow">ENGAGE</span><h2>Best reply opportunities <DataBadge source={source}/></h2></div><button className="text-btn" onClick={onView}>View all <ArrowUpRight size={13}/></button></div><div className="opportunity-head"><span>AUTHOR & POST</span><span>EST. REACH</span><span>RELEVANCE</span></div>{items.slice(0,4).map((item) => <div className="opportunity-row" key={item.id}><div className="author"><div className="avatar">{item.initials}</div><div><strong>{item.name}<small>{item.handle}</small></strong><p>{item.post}</p><small>{item.reason}{item.algorithmVersion?` · ${item.algorithmVersion}`:""}</small></div></div><span>{item.reach}<small><ProvenanceText provenance={item.reachProvenance}/></small></span><b>{item.relevance}%<small><ProvenanceText provenance={item.relevanceProvenance}/></small></b><button className="outline-btn" onClick={() => onReply(item)}><MessageCircle size={14}/> Reply</button></div>)}</div>;
 }
 
-function DiscoverView({ signals: rows, opportunities: ops, onCreate, onReply, onSync, onConnect, onFeedback, source, syncing, error, lastSync }: { signals: IdeaSignal[]; opportunities: ReplyOpportunity[]; onCreate: (signal:IdeaSignal) => void; onReply:(item:ReplyOpportunity)=>void; onSync:()=>void; onConnect:()=>void; onFeedback:(signal:IdeaSignal,vote:number)=>void; source:"demo"|"live"; syncing:boolean; error:string; lastSync?:string }) {
-  return <div className="discover-layout"><section className="source-banner"><div><DataBadge source={source}/><p>{source === "live" ? `Ideas and replies are ranked from your real X feed${lastSync ? ` · synced ${new Date(lastSync).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}` : ""}.` : "These are examples. Connect X to derive ideas and reply opportunities from accounts you actually follow."}</p></div>{source === "live" ? <button className="outline-btn" onClick={onSync} disabled={syncing}><CircleGauge size={14}/>{syncing ? "Syncing…" : "Sync from X"}</button> : <button className="primary-btn" onClick={onConnect}><Link2 size={14}/> Connect X</button>}</section>{error && <div className="sync-error">Could not sync: {error}</div>}<section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">IDEAS FROM YOUR NETWORK</span><h2>What is gaining momentum</h2><p>Topics found in your home timeline and compared with your recent posts.</p></div><button className="outline-btn" onClick={source === "live" ? onSync : onConnect}><CircleGauge size={14}/> {source === "live" ? "Refresh ideas" : "Connect for live ideas"}</button></div><div className="signal-cards">{rows.map((signal, index) => <article key={signal.topic}><div className="signal-rank">0{index+1}</div><Flame size={18}/><div><h3>{signal.topic} <small>{signal.pillar}</small></h3><p>{signal.rationale || signal.change}{signal.algorithmVersion?` · ${signal.algorithmVersion}`:""}</p></div><div className="idea-vote"><button onClick={()=>onFeedback(signal,1)}>👍</button><button onClick={()=>onFeedback(signal,-1)}>👎</button></div><div className="signal-score"><strong>{signal.score}</strong><span><ProvenanceText provenance={signal.scoreProvenance}/></span></div><button className="outline-btn" onClick={() => onCreate(signal)}><Lightbulb size={14}/> Use idea</button></article>)}</div></section><section className="panel full-panel"><OpportunityList items={ops} source={source} onReply={onReply} onView={() => {}}/></section></div>;
+function DiscoverView({ signals: rows, opportunities: ops, onCreate, onReply, onSync, onConnect, onCredits, onFeedback, source, syncing, syncEnabled, error, lastSync }: { signals: IdeaSignal[]; opportunities: ReplyOpportunity[]; onCreate: (signal:IdeaSignal) => void; onReply:(item:ReplyOpportunity)=>void; onSync:()=>void; onConnect:()=>void; onCredits:()=>void; onFeedback:(signal:IdeaSignal,vote:number)=>void; source:"demo"|"live"; syncing:boolean; syncEnabled:boolean; error:string; lastSync?:string }) {
+  const disabled=syncing||!syncEnabled;
+  const guidance=error?syncErrorGuidance(error):null;
+  return <div className="discover-layout"><section className="source-banner"><div><DataBadge source={source}/><p>{source === "live" ? `Ideas and replies are ranked from your real X feed${lastSync ? ` · synced ${new Date(lastSync).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}` : ""}.` : "These are examples. Connect X to derive ideas and reply opportunities from accounts you actually follow."}</p>{source==="live"&&!syncEnabled&&<small>OpenX&apos;s local safety cap cannot cover another complete sync. This is separate from X Credits. <button className="inline-link" onClick={onCredits}>Open Credits &amp; limits</button></small>}</div>{source === "live" ? <button className="outline-btn" onClick={onSync} disabled={disabled}><CircleGauge size={14}/>{syncing ? "Syncing…" : "Sync X data"}</button> : <button className="primary-btn" onClick={onConnect}><Link2 size={14}/> Connect X</button>}</section>{guidance && <div className="sync-error" role="alert"><span>{guidance.body}</span>{guidance.manageLimits&&<button className="text-btn" onClick={onCredits}>Open Credits &amp; limits</button>}</div>}<section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">IDEAS FROM YOUR NETWORK</span><h2>What is gaining momentum</h2><p>Topics found in your home timeline and compared with your recent posts.</p></div><button className="outline-btn" onClick={source === "live" ? onSync : onConnect} disabled={source==="live"&&disabled}><CircleGauge size={14}/> {source === "live" ? syncing?"Syncing…":"Sync X data" : "Connect for live ideas"}</button></div><div className="signal-cards">{rows.map((signal, index) => <article key={signal.topic}><div className="signal-rank">0{index+1}</div><Flame size={18}/><div><h3>{signal.topic} <small>{signal.pillar}</small></h3><p>{signal.rationale || signal.change}{signal.algorithmVersion?` · ${signal.algorithmVersion}`:""}</p></div><div className="idea-vote"><button onClick={()=>onFeedback(signal,1)}>👍</button><button onClick={()=>onFeedback(signal,-1)}>👎</button></div><div className="signal-score"><strong>{signal.score}</strong><span><ProvenanceText provenance={signal.scoreProvenance}/></span></div><button className="outline-btn" onClick={() => onCreate(signal)}><Lightbulb size={14}/> Use idea</button></article>)}</div></section><section className="panel full-panel"><OpportunityList items={ops} source={source} onReply={onReply} onView={() => {}}/></section></div>;
 }
 
 function ScheduleView({ items, onCreate,postingTimes }: { items: ContentItem[]; onCreate: () => void;postingTimes?:AnalyticsData["postingTimes"] }) {
   const start=new Date();start.setHours(0,0,0,0);const days=Array.from({length:7},(_,index)=>{const date=new Date(start);date.setDate(start.getDate()+index);return date});
   const recommendation=postingTimes?.status==="ready"&&postingTimes.suggestions.length?`Recommended from ${postingTimes.sampleSize} published posts: ${postingTimes.suggestions.slice(0,3).map((item)=>item.label).join(", ")}`:`Insufficient data for posting-time recommendations${postingTimes?` (${postingTimes.sampleSize}/${postingTimes.minimumSamples} published posts)`:""}.`;
   return <section className="panel full-panel calendar-panel"><div className="panel-header"><div><span className="eyebrow">PERSISTENT SCHEDULE</span><h2>Next seven days</h2><p>Scheduled posts are stored in D1 and published by the protected cron endpoint.</p><p><Clock3 size={12}/> {recommendation}</p></div><button className="primary-btn" onClick={onCreate}><Plus size={16}/> Schedule post</button></div><div className="calendar-grid">{days.map((day)=>{const dayItems=items.filter((item)=>item.date!=="—"&&new Date(item.date).toDateString()===day.toDateString());return <div className="calendar-day" key={day.toISOString()}><strong>{day.toLocaleDateString(undefined,{weekday:"short",day:"numeric"}).toUpperCase()}</strong>{dayItems.map((item)=><article key={item.id}><span>{new Date(item.date).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span><p>{item.text}</p>{item.evergreen&&<small>Evergreen</small>}</article>)}</div>})}</div></section>;
+}
+
+type UsageControlResult={ok:boolean;message:string};
+
+function CreditsLimitsView({config,syncing,onSave,onReset}:{config:AppRuntimeConfig;syncing:boolean;onSave:(limits:{maxResources:number;maxSyncResources:number;maxWrites:number})=>Promise<UsageControlResult>;onReset:()=>Promise<UsageControlResult>}) {
+  const usage=config.usage;
+  const [daily,setDaily]=useState(String(usage?.maxResources??500));
+  const [perSync,setPerSync]=useState(String(usage?.maxSyncResources??11));
+  const [writes,setWrites]=useState(String(usage?.maxWrites??50));
+  const [busy,setBusy]=useState<"save"|"reset"|null>(null);
+  const [message,setMessage]=useState<UsageControlResult|null>(null);
+  const controlsEnabled=Boolean(config.usageControlsEnabled&&usage)&&!syncing&&!busy;
+  const validate=():{valid:true;limits:{maxResources:number;maxSyncResources:number;maxWrites:number}}|{valid:false;error:string}=>{
+    const limits={maxResources:Number(daily),maxSyncResources:Number(perSync),maxWrites:Number(writes)};
+    if(!Number.isInteger(limits.maxResources)||limits.maxResources<11||limits.maxResources>10_000)return {valid:false,error:"Daily returned data cap must be a whole number from 11 to 10,000."};
+    if(!Number.isInteger(limits.maxSyncResources)||limits.maxSyncResources<11||limits.maxSyncResources>101)return {valid:false,error:"Per-sync cap must be a whole number from 11 to 101."};
+    if(limits.maxSyncResources>limits.maxResources)return {valid:false,error:"Per-sync cap cannot be higher than the daily cap."};
+    if(!Number.isInteger(limits.maxWrites)||limits.maxWrites<0||limits.maxWrites>1_000)return {valid:false,error:"Daily write-attempt cap must be a whole number from 0 to 1,000."};
+    return {valid:true,limits};
+  };
+  const save=async()=>{const parsed=validate();if(!parsed.valid){setMessage({ok:false,message:parsed.error});return}setBusy("save");setMessage(null);setMessage(await onSave(parsed.limits));setBusy(null)};
+  const reset=async()=>{setBusy("reset");setMessage(null);setMessage(await onReset());setBusy(null)};
+  const resourcePercent=usage?.maxResources?Math.min(100,Math.round(100*usage.usedResources/usage.maxResources)):0;
+  const writePercent=usage?.maxWrites?Math.min(100,Math.round(100*usage.usedWrites/usage.maxWrites)):0;
+  return <div className="credits-layout">
+    <section className="panel credits-hero">
+      <div><span className="eyebrow">ONE PLACE FOR USAGE CONTROLS</span><h2>Local limits are not paid credits</h2><p>OpenX counters are safety controls stored by this installation. They do not read, spend, reset, or change your paid balance with X or your AI provider.</p></div>
+      <div className="credits-reset-summary"><span>Next automatic reset</span><strong>{localResetLabel(usage?.resetsAt)}</strong><small>Daily OpenX counters use the UTC day.</small></div>
+    </section>
+
+    <section className="credits-usage-grid" aria-label="OpenX local usage">
+      <article className="panel usage-card"><span>OPENX DATA ITEMS</span><strong>{usage?`${usage.usedResources} / ${usage.maxResources}`:"—"}</strong><p>Returned X data items counted today. {usage?`${usage.availableResources} remain.`:"Unavailable in demo mode."}</p><div className="usage-track" role="progressbar" aria-label="Returned X data items used" aria-valuemin={0} aria-valuemax={usage?.maxResources??0} aria-valuenow={usage?.usedResources??0}><i style={{width:`${resourcePercent}%`}}/></div></article>
+      <article className="panel usage-card"><span>PER-SYNC DATA CAP</span><strong>{usage?.maxSyncResources??"—"}</strong><p>A single sync can count at most this many returned items. Unused daily capacity remains available for later syncs.</p></article>
+      <article className="panel usage-card"><span>OPENX WRITE ATTEMPTS</span><strong>{usage?`${usage.usedWrites} / ${usage.maxWrites}`:"—"}</strong><p>Local attempts counted today. This is a safety gate, not a provider invoice.</p><div className="usage-track" role="progressbar" aria-label="Write attempts used" aria-valuemin={0} aria-valuemax={usage?.maxWrites??0} aria-valuenow={usage?.usedWrites??0}><i style={{width:`${writePercent}%`}}/></div></article>
+    </section>
+
+    <div className="credits-main-grid">
+      <section className="panel limits-editor" aria-labelledby="limits-editor-heading">
+        <span className="eyebrow">USER-DEFINED SAFETY CAPS</span><h2 id="limits-editor-heading">Choose how much OpenX may count</h2><p>These values control OpenX preflight checks. A sync is stopped before contacting X when the remaining local allowance cannot cover it.</p>
+        <div className="limits-form">
+          <label>Daily returned data items<input type="number" min="11" max="10000" step="1" value={daily} onChange={(event)=>setDaily(event.target.value)} disabled={!controlsEnabled}/><small>11–10,000. Resets automatically each UTC day.</small></label>
+          <label>Returned data items per sync<input type="number" min="11" max="101" step="1" value={perSync} onChange={(event)=>setPerSync(event.target.value)} disabled={!controlsEnabled}/><small>11–101, never higher than the daily cap.</small></label>
+          <label>Daily write attempts<input type="number" min="0" max="1000" step="1" value={writes} onChange={(event)=>setWrites(event.target.value)} disabled={!controlsEnabled}/><small>Set 0 to block all X writes locally.</small></label>
+        </div>
+        <div className="limits-actions"><button className="primary-btn" onClick={()=>void save()} disabled={!controlsEnabled}>{busy==="save"?"Saving…":"Save limits"}</button><span>Deployment defaults: {usage?.deploymentMaxResources??"—"} data items · {usage?.deploymentMaxWrites??"—"} writes. {usage?.userConfigured?"Your override is active.":"No user override yet."}</span></div>
+      </section>
+
+      <section className="panel reset-panel" aria-labelledby="reset-limits-heading">
+        <RotateCcw size={20}/><span className="eyebrow">TESTING AND RECOVERY</span><h2 id="reset-limits-heading">Reset today&apos;s OpenX counters</h2><p>This clears today&apos;s returned-data and write-attempt counters only. It does not change your saved caps, cached content, X authorization, X Developer Credits, or AI credits.</p><button className="outline-btn" onClick={()=>void reset()} disabled={!controlsEnabled}>{busy==="reset"?"Resetting…":"Reset today's counters"}</button>
+        {syncing&&<small>A sync is running. Controls unlock when it finishes.</small>}
+      </section>
+    </div>
+
+    {message&&<div className={`usage-control-message ${message.ok?"success":"error"}`} role={message.ok?"status":"alert"}>{message.message}</div>}
+
+    <section className="credits-provider-grid" aria-label="External provider credits">
+      <article className="panel provider-credit-card"><div><CreditCard size={18}/><span>EXTERNAL PROVIDER</span></div><h2>X Developer Credits</h2><strong>Balance not imported</strong><p>X owns pricing, billing, and your paid balance. OpenX only shows its own local counters above.</p><a className="outline-btn" href={X_DEV_CONSOLE} target="_blank" rel="noreferrer">Open X Developer Console <ArrowUpRight size={14}/></a></article>
+      <article className="panel provider-credit-card"><div><Sparkles size={18}/><span>EXTERNAL PROVIDER</span></div><h2>{config.aiConfiguration?.provider??"AI provider"} credits</h2><strong>Balance not imported</strong><p>AI generation uses the configured provider only after you request it. Provider balance and billing remain in that provider&apos;s dashboard.</p><button className="outline-btn" disabled>Managed outside OpenX</button></article>
+    </section>
+
+    <section className="panel credits-explainer"><span className="eyebrow">HOW THE NUMBERS WORK</span><div><h2>Daily cap</h2><p>Maximum returned data items and write attempts OpenX will count in one UTC day.</p></div><div><h2>Per-sync cap</h2><p>Maximum data items one explicit sync may count, so one sync does not have to consume the whole daily allowance.</p></div><div><h2>Provider credits</h2><p>Money or balance managed by X or your AI provider. OpenX does not infer a balance from local request counts.</p></div></section>
+  </div>;
 }
 
 function AnalyticsView({ range, setRange, data }: { range: string; setRange: (v: string) => void; data?:AnalyticsData }) {
@@ -593,13 +734,13 @@ function AnalyticsView({ range, setRange, data }: { range: string; setRange: (v:
   return <div className="analytics-layout"><section className="metrics-row">{cards.map(({label,metric,suffix="",icon:Icon})=><article className="metric-card" key={label}><div><span>{label}</span><strong>{metric.value.toLocaleString(undefined,{maximumFractionDigits:2})}{suffix}</strong><small><Check size={12}/><ProvenanceText provenance={metric.provenance}/></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}</section><section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">DERIVED SERIES</span><h2>Impressions over time</h2><p><ProvenanceText provenance={data.derived.totals.impressions.provenance}/></p></div><div className="range-tabs">{["7D","28D","90D","1Y"].map((item)=><button className={range===item?"selected":""} key={item} onClick={()=>setRange(item)}>{item}</button>)}</div></div><div className="large-chart"><DataSeriesChart label="Impressions from X snapshots" points={data.derived.series.map((point)=>({recordedAt:point.recordedAt,value:point.impressions.value}))}/></div></section><div className="analytics-grid">{breakdown("Performance by topic",data.derived.byTopic)}{breakdown("Performance by format",data.derived.byFormat)}{breakdown("Best hooks",data.derived.byHook)}{breakdown("Posting-hour performance",data.derived.byHour)}</div></div>;
 }
 
-function SettingsView({ connected, synced, config, csrf, onDisconnected, onOpenGuide }: { connected:boolean;synced:boolean;config:AppRuntimeConfig;csrf:string;onDisconnected:()=>void;onOpenGuide:()=>void }) {
+function SettingsView({ connected, synced, config, csrf, syncing, syncError, onSync, onReconnect, onCredits, onDisconnected, onOpenGuide }: { connected:boolean;synced:boolean;config:AppRuntimeConfig;csrf:string;syncing:boolean;syncError:string;onSync:()=>void;onReconnect:()=>void;onCredits:()=>void;onDisconnected:()=>void;onOpenGuide:()=>void }) {
   const [message,setMessage]=useState("");
   const [setupReferenceOpen,setSetupReferenceOpen]=useState(false);
   const [origin] = useState(() => (typeof window === "undefined" ? "https://your-domain.com" : window.location.origin));
   const callback = `${origin}/api/x/oauth/callback`;
   const cronExample = `curl -X POST "${origin}/api/cron/publish" -H "Authorization: Bearer $CRON_SECRET"`;
-  const disconnect=async()=>{const response=await fetch("/api/x/disconnect",{method:"POST",headers:{"X-CSRF-Token":csrf}});if(response.ok){onDisconnected();setMessage("X disconnected and stored tokens deleted.")}};
+  const disconnect=async()=>{if(!window.confirm("Delete saved X authorization and the temporary ideas/replies cache? Drafts, schedules, analytics snapshots, and local usage settings remain."))return;const response=await fetch("/api/x/disconnect",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify({intent:"disconnect"})});if(response.ok){onDisconnected();setMessage("X authorization and the temporary ideas/replies cache were deleted. Durable local data remains.")}};
   const deleteAll=async()=>{if(!window.confirm("Delete every local draft, schedule, metric, feedback item, cached X post and OAuth token? This cannot be undone."))return;const response=await fetch("/api/data/delete",{method:"DELETE",headers:{"X-CSRF-Token":csrf}});if(response.ok){onDisconnected();setMessage("All local application data was deleted. Refreshing…");setTimeout(()=>window.location.reload(),700)}else setMessage("Deletion failed.")};
   const importData=async(file:File)=>{try{const payload=JSON.parse(await file.text());const response=await fetch("/api/data/import",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(payload)});const failure=response.ok?undefined:await response.json() as {error?:string};setMessage(response.ok?"Import completed. Refresh to see the data.":`Import failed: ${failure?.error??"unknown error"}`)}catch{setMessage("Invalid JSON export.")}};
   const x=config.xConfiguration;
@@ -618,25 +759,20 @@ function SettingsView({ connected, synced, config, csrf, onDisconnected, onOpenG
           <div className={`connection-state ${connected?"is-connected":""}`}><i/>{connected?"Connected to X":"Not connected"}</div>
         </div>
 
-        <div className="config-status">
-          <ConfigurationLine label="X account" value={connected?"Connected":"Not connected"} ok={connected}/>
-          <ConfigurationLine label="X_CLIENT_ID" value={protectedConfigured(x?.xClientIdConfigured)} ok={Boolean(x?.xClientIdConfigured)}/>
-          <ConfigurationLine label="SESSION_SECRET" value={protectedConfigured(x?.sessionSecretConfigured)} ok={Boolean(x?.sessionSecretConfigured)}/>
-          <ConfigurationLine label="APP_URL" value={protectedConfigured(x?.appUrlConfigured)} ok={Boolean(x?.appUrlConfigured)}/>
-          <ConfigurationLine label="X_CLIENT_SECRET" value={protectedConfigured(x?.xClientSecretConfigured)} ok={Boolean(x?.xClientSecretConfigured)}/>
-          <ConfigurationLine label="APP_ACCESS_TOKEN" value={protectedConfigured(x?.appAccessTokenConfigured)} ok={Boolean(x?.appAccessTokenConfigured)}/>
-          <ConfigurationLine label="CRON_SECRET" value={protectedConfigured(x?.cronSecretConfigured)} ok={Boolean(x?.cronSecretConfigured)}/>
-          <ConfigurationLine label="OPENX_API_TOKEN" value={protectedConfigured(x?.apiTokenConfigured)} ok={Boolean(x?.apiTokenConfigured)}/>
-          <ConfigurationLine label="Provider" value={ai?.provider??"Unavailable in public demo"} ok={Boolean(ai)}/>
-          <ConfigurationLine label="Model" value={ai?.model??"Unavailable in public demo"} ok={Boolean(ai)}/>
-          <ConfigurationLine label="API key" value={configured(ai?.apiKeyConfigured??config.aiConfigured)} ok={ai?.apiKeyConfigured??config.aiConfigured}/>
-          <ConfigurationLine label="AI content" value={(ai?.contentApproved??config.aiContentApproved)?"Enabled":"Disabled"} ok={ai?.contentApproved??config.aiContentApproved}/>
-          <ConfigurationLine label="AI replies" value={(ai?.repliesApproved??config.aiRepliesApproved)?"Enabled":"Disabled"} ok={ai?.repliesApproved??config.aiRepliesApproved}/>
-        </div>
+        <section className="settings-section" aria-labelledby="instance-access-heading"><span className="eyebrow">INSTANCE ACCESS</span><h3 id="instance-access-heading">Instance access</h3><p>{config.accessProtected?"This instance requires local application access before workspace data is shown.":"This instance is not currently protected for browser access."}</p><div className="config-status"><ConfigurationLine label="APP_ACCESS_TOKEN" value={protectedConfigured(x?.appAccessTokenConfigured)} ok={Boolean(x?.appAccessTokenConfigured)}/></div><a className="text-btn" href="/privacy">Privacy notice</a></section>
+
+        <XStatusSurface status={config} syncing={syncing} error={syncError} onSync={onSync} onReconnect={onReconnect} onSettings={()=>setSetupReferenceOpen(true)} onCredits={onCredits}/>
+        <section className="settings-section"><div className="config-status"><ConfigurationLine label="X_CLIENT_ID" value={protectedConfigured(x?.xClientIdConfigured)} ok={Boolean(x?.xClientIdConfigured)}/><ConfigurationLine label="X_CLIENT_SECRET" value={protectedConfigured(x?.xClientSecretConfigured)} ok={Boolean(x?.xClientSecretConfigured)}/><ConfigurationLine label="SESSION_SECRET" value={protectedConfigured(x?.sessionSecretConfigured)} ok={Boolean(x?.sessionSecretConfigured)}/><ConfigurationLine label="APP_URL" value={protectedConfigured(x?.appUrlConfigured)} ok={Boolean(x?.appUrlConfigured)}/><ConfigurationLine label="Origin" value={config.origin?.currentMatchesCanonical?"This address matches APP_URL":"This address does not match APP_URL"} ok={Boolean(config.origin?.currentMatchesCanonical)}/></div><div className="settings-actions"><button className="danger-btn" onClick={disconnect}>Disconnect X</button></div></section>
+
+        <section className="settings-section" aria-labelledby="ai-drafting-heading"><span className="eyebrow">AI DRAFTING</span><h3 id="ai-drafting-heading">{ai?.state==="ready"?"AI drafting ready":"AI drafting is off"}</h3><p>Generation is user-initiated, editable, and requires human review. OpenX never publishes AI output automatically.</p><div className="config-status"><ConfigurationLine label="Provider" value={ai?.provider??"Unavailable in public demo"} ok={Boolean(ai)}/><ConfigurationLine label="Model" value={ai?.model??"Unavailable in public demo"} ok={Boolean(ai)}/><ConfigurationLine label="API key" value={configured(ai?.apiKeyConfigured??config.aiConfigured)} ok={ai?.apiKeyConfigured??config.aiConfigured}/><ConfigurationLine label="Content approval" value={(ai?.contentApproved??config.aiContentApproved)?"Enabled":"Disabled"} ok={ai?.contentApproved??config.aiContentApproved}/><ConfigurationLine label="Reply approval" value={(ai?.repliesApproved??config.aiRepliesApproved)?"Enabled":"Disabled"} ok={ai?.repliesApproved??config.aiRepliesApproved}/></div></section>
+
+        <section className="settings-section" aria-labelledby="publishing-heading"><span className="eyebrow">PUBLISHING / AUTOMATION</span><h3 id="publishing-heading">Publishing and automation</h3><p>Publishing remains human-approved. Ambiguous provider acceptance requires reconciliation; no autonomous engagement is enabled.</p><div className="config-status"><ConfigurationLine label="CRON_SECRET" value={protectedConfigured(x?.cronSecretConfigured)} ok={Boolean(x?.cronSecretConfigured)}/><ConfigurationLine label="OPENX_API_TOKEN" value={protectedConfigured(x?.apiTokenConfigured)} ok={Boolean(x?.apiTokenConfigured)}/><ConfigurationLine label="Evergreen" value={config.evergreenEnabled?"Enabled":"Disabled"} ok={config.evergreenEnabled}/></div></section>
+
+        <section className="settings-section" aria-labelledby="data-privacy-heading"><span className="eyebrow">DATA AND PRIVACY</span><h3 id="data-privacy-heading">Data and privacy</h3><p>Disconnect removes authorization and the temporary ideas/replies cache. Export, import, and delete-all retain their separate explicit scopes.</p><div className="settings-actions"><a className="outline-btn" href="/api/data/export" download>Export all data</a><label className="outline-btn file-button">Import JSON<input type="file" accept="application/json" onChange={(event)=>{const file=event.target.files?.[0];if(file)void importData(file)}}/></label><button className="danger-btn" onClick={disconnect}>Disconnect X</button><button className="danger-btn" onClick={deleteAll}>Delete all local data</button><a className="outline-btn" href="/privacy">Privacy notice</a></div>{message&&<div className="form-disclaimer" role="status"><Check size={14}/><span>{message}</span></div>}</section>
 
         <button className="setup-help" onClick={onOpenGuide}><Lightbulb size={16}/><span><strong>Prefer a step-by-step wizard?</strong><small>Open the interactive setup guide</small></span><ArrowUpRight size={15}/></button>
 
-        <button className="setup-reference-toggle" onClick={()=>setSetupReferenceOpen((open)=>!open)} aria-expanded={setupReferenceOpen}><span><small>SETUP REFERENCE</small><strong>Installation examples and schema requirements</strong><em>Reference values below are not the current runtime configuration.</em></span><ChevronDown size={16}/></button>
+        <button className="setup-reference-toggle" onClick={()=>setSetupReferenceOpen((open)=>!open)} aria-expanded={setupReferenceOpen}><span><small>ADVANCED SETUP REFERENCE</small><strong>Installation examples and schema requirements</strong><em>Reference values below are not the current runtime configuration.</em></span><ChevronDown size={16}/></button>
         {setupReferenceOpen&&<div className="setup-reference">
         <GuideStep n={1} title="Create an app in the X Developer Console">
           <div className="instruction-list">

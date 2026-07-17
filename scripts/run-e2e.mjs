@@ -96,20 +96,23 @@ async function sealFixture(value,secret) {
   return `${base64url(iv)}.${base64url(new Uint8Array(encrypted))}`;
 }
 
-async function seedAnalytics(stateDir,now) {
+async function seedAnalytics(stateDir,now,{sessionMode="valid",seedCache=false,analyticsRecords=true}={}) {
   const publishDay=new Date(now-86_400_000);
   const statements=[];
-  for(let index=0;index<8;index++){
+  for(let index=0;analyticsRecords&&index<8;index++){
     const hour=index<4?9:10;
     const publishedAt=Date.UTC(publishDay.getUTCFullYear(),publishDay.getUTCMonth(),publishDay.getUTCDate(),hour,index);
     statements.push(`INSERT INTO posts (id,text,status,published_at,x_post_id,format,generated,evergreen,evergreen_interval_days,attempts,created_at,updated_at) VALUES ('fixture-${index}','Fixture post ${index}','published',${publishedAt},'x-${index}','post',0,0,30,0,${publishedAt},${publishedAt})`);
     statements.push(`INSERT INTO analytics_snapshots (post_id,recorded_at,impressions,likes,replies,reposts,bookmarks) VALUES ('x-${index}',${now-index*1000},${index<4?10_000:100},10,0,0,0)`);
   }
-  statements.push(`INSERT INTO analytics_snapshots (post_id,recorded_at,impressions,likes,replies,reposts,bookmarks) VALUES ('x-stale',${now-8*86_400_000},999999,999,0,0,0)`);
-  statements.push(`INSERT INTO follower_snapshots (account_id,recorded_at,followers) VALUES ('owner',${now-2*86_400_000},120)`);
-  statements.push(`INSERT INTO follower_snapshots (account_id,recorded_at,followers) VALUES ('owner',${now-86_400_000},123)`);
-  const sealedSession=await sealFixture({accessToken:"fixture-access-token",refreshToken:"fixture-refresh-token",clientId:"e2e-x-client",expiresAt:now+3_600_000},sessionSecret);
+  if(analyticsRecords){
+    statements.push(`INSERT INTO analytics_snapshots (post_id,recorded_at,impressions,likes,replies,reposts,bookmarks) VALUES ('x-stale',${now-8*86_400_000},999999,999,0,0,0)`);
+    statements.push(`INSERT INTO follower_snapshots (account_id,recorded_at,followers) VALUES ('owner',${now-2*86_400_000},120)`);
+    statements.push(`INSERT INTO follower_snapshots (account_id,recorded_at,followers) VALUES ('owner',${now-86_400_000},123)`);
+  }
+  const sealedSession=await sealFixture({accessToken:"fixture-access-token",...(sessionMode==="expired-no-refresh"?{}:{refreshToken:"fixture-refresh-token"}),clientId:"e2e-x-client",expiresAt:sessionMode==="valid"?now+3_600_000:now-1},sessionSecret);
   statements.push(`INSERT INTO secure_store (key,sealed_value,updated_at) VALUES ('x-session','${sealedSession}',${now})`);
+  if(seedCache){const payload=JSON.stringify({source:"live",syncedAt:new Date(now-60_000).toISOString(),account:{id:"owner",name:"Fixture Owner",username:"fixture_owner"},opportunities:[],ideas:[],usage:{}}).replaceAll("'","''");statements.push(`INSERT INTO sync_cache (key,payload,expires_at,updated_at) VALUES ('x-growth-sync','${payload}',${now-1},${now-60_000})`);}
   await run(wrangler,["d1","execute","DB","--local","--config",config,"--persist-to",stateDir,"--command",statements.join(";")],{env:safeEnv()});
 }
 
@@ -125,9 +128,13 @@ async function seedDemoResidue(stateDir,now) {
   await run(wrangler,["d1","execute","DB","--local","--config",config,"--persist-to",stateDir,"--command",statements.join(";")],{env:safeEnv()});
 }
 
-async function startInstance({port,stateDir,configured,protectedAccess,analyticsFixture=false,demoResidue=false,maxWrites,aiBaseUrl,aiEnabled=false}) {
-  await run(wrangler,["d1","migrations","apply","DB","--local","--config",config,"--persist-to",stateDir],{env:safeEnv()});
-  if(analyticsFixture)await seedAnalytics(stateDir,analyticsFixtureNow);
+async function startInstance({port,stateDir,configured,protectedAccess,analyticsFixture=false,analyticsRecords=true,demoResidue=false,maxWrites,maxResources,aiBaseUrl,aiEnabled=false,schemaLevel="current",sessionMode="valid",seedCache=false,syncDelayMs,syncStatus,sparse=false}) {
+  if(schemaLevel==="current")await run(wrangler,["d1","migrations","apply","DB","--local","--config",config,"--persist-to",stateDir],{env:safeEnv()});
+  else if(schemaLevel!=="none"){
+    const through=schemaLevel==="0000"?0:2;
+    for(let index=0;index<=through;index++){const file=["0000_far_blink.sql","0001_woozy_darkstar.sql","0002_clean_proteus.sql"][index];await run(wrangler,["d1","execute","DB","--local","--config",config,"--persist-to",stateDir,"--file",join(root,"drizzle",file)],{env:safeEnv()});}
+  }
+  if(analyticsFixture)await seedAnalytics(stateDir,analyticsFixtureNow,{sessionMode,seedCache,analyticsRecords});
   if(demoResidue)await seedDemoResidue(stateDir,analyticsFixtureNow);
   const appUrl=`http://127.0.0.1:${port}`;
   const env=safeEnv({
@@ -144,14 +151,17 @@ async function startInstance({port,stateDir,configured,protectedAccess,analytics
     AI_MODEL:aiEnabled?"e2e-ai-model":"gpt-5-mini",
     X_AI_CONTENT_APPROVED:aiEnabled?"true":"false",
     X_AI_REPLIES_APPROVED:"false",
-    MAX_DAILY_X_RESOURCES:protectedAccess?"25":"500",
+    MAX_DAILY_X_RESOURCES:String(maxResources??(protectedAccess?25:500)),
     MAX_DAILY_X_WRITES:String(maxWrites??(protectedAccess?3:50)),
     OPENX_E2E_X_FIXTURE:protectedAccess?"sync":"",
+    OPENX_E2E_SYNC_DELAY_MS:String(syncDelayMs??""),
+    OPENX_E2E_SYNC_STATUS:String(syncStatus??""),
+    OPENX_E2E_SYNC_SPARSE:sparse?"1":"0",
   });
   const child=spawn(vite,["--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env,stdio:["ignore","pipe","pipe"]});
   let output="";
   for(const stream of [child.stdout,child.stderr])stream?.on("data",(chunk)=>{output=(output+redact(String(chunk))).slice(-20_000);});
-  await waitFor(`${appUrl}/api/x/status`,protectedAccess?401:configured?503:200,child,()=>output);
+  await waitFor(`${appUrl}/api/x/status`,schemaLevel!=="current"?503:protectedAccess?401:configured?503:200,child,()=>output);
   return {child,appUrl,logs:()=>output};
 }
 
@@ -159,24 +169,49 @@ const stateRoot=await mkdtemp(join(tmpdir(),"openx-growth-e2e-"));
 const instances=[];
 let aiFixture;
 try{
-  const ports=await Promise.all(Array.from({length:6},()=>freePort()));
-  const [demoPort,misconfiguredPort,protectedPort,publisherPort,aiPort,aiFixturePort]=ports;
+  const ports=await Promise.all(Array.from({length:12},()=>freePort()));
+  const [demoPort,misconfiguredPort,protectedPort,publisherPort,aiPort,aiFixturePort,missingSchemaPort,outdated0000Port,outdated0002Port,refreshSuccessPort,refreshRejectPort,noRefreshPort]=ports;
   aiFixture=await startAiFixture(aiFixturePort);
   instances.push(await startInstance({port:demoPort,stateDir:join(stateRoot,"demo"),configured:false,protectedAccess:false,demoResidue:true}));
   instances.push(await startInstance({port:misconfiguredPort,stateDir:join(stateRoot,"misconfigured"),configured:true,protectedAccess:false}));
   instances.push(await startInstance({port:protectedPort,stateDir:join(stateRoot,"protected"),configured:true,protectedAccess:true,analyticsFixture:true}));
   instances.push(await startInstance({port:publisherPort,stateDir:join(stateRoot,"publisher"),configured:true,protectedAccess:true,analyticsFixture:true,maxWrites:50}));
   instances.push(await startInstance({port:aiPort,stateDir:join(stateRoot,"ai"),configured:true,protectedAccess:true,analyticsFixture:true,aiBaseUrl:aiFixture.baseUrl,aiEnabled:true}));
+  instances.push(await startInstance({port:missingSchemaPort,stateDir:join(stateRoot,"schema-missing"),configured:true,protectedAccess:true,schemaLevel:"none"}));
+  instances.push(await startInstance({port:outdated0000Port,stateDir:join(stateRoot,"schema-0000"),configured:true,protectedAccess:true,schemaLevel:"0000"}));
+  instances.push(await startInstance({port:outdated0002Port,stateDir:join(stateRoot,"schema-0002"),configured:true,protectedAccess:true,schemaLevel:"0002"}));
+  instances.push(await startInstance({port:refreshSuccessPort,stateDir:join(stateRoot,"refresh-success"),configured:true,protectedAccess:true,analyticsFixture:true,sessionMode:"expired-refresh"}));
+  instances.push(await startInstance({port:refreshRejectPort,stateDir:join(stateRoot,"refresh-reject"),configured:true,protectedAccess:true,analyticsFixture:true,sessionMode:"expired-refresh",seedCache:true}));
+  instances.push(await startInstance({port:noRefreshPort,stateDir:join(stateRoot,"no-refresh"),configured:true,protectedAccess:true,analyticsFixture:true,sessionMode:"expired-no-refresh",seedCache:true}));
+  if(process.env.OPENX_E2E_BROWSER_HOLD==="1"){
+    const [disconnectedPort,firstSyncPort,cachedRefreshPort,cachedFailurePort,sparsePort,budgetPort]=await Promise.all(Array.from({length:6},()=>freePort()));
+    const browserInstances=[
+      await startInstance({port:disconnectedPort,stateDir:join(stateRoot,"browser-disconnected"),configured:true,protectedAccess:true}),
+      await startInstance({port:firstSyncPort,stateDir:join(stateRoot,"browser-first-sync"),configured:true,protectedAccess:true,analyticsFixture:true,analyticsRecords:false,syncDelayMs:8_000}),
+      await startInstance({port:cachedRefreshPort,stateDir:join(stateRoot,"browser-cached-refresh"),configured:true,protectedAccess:true,analyticsFixture:true,seedCache:true,syncDelayMs:8_000}),
+      await startInstance({port:cachedFailurePort,stateDir:join(stateRoot,"browser-cached-failure"),configured:true,protectedAccess:true,analyticsFixture:true,seedCache:true,syncStatus:503}),
+      await startInstance({port:sparsePort,stateDir:join(stateRoot,"browser-sparse"),configured:true,protectedAccess:true,analyticsFixture:true,analyticsRecords:false,sparse:true}),
+      await startInstance({port:budgetPort,stateDir:join(stateRoot,"browser-budget"),configured:true,protectedAccess:true,analyticsFixture:true,maxResources:10}),
+    ];
+    instances.push(...browserInstances);
+    process.stdout.write(`BROWSER_FIXTURES ${JSON.stringify({readyToSync:instances[2].appUrl,aiReady:instances[4].appUrl,schemaMissing:instances[5].appUrl,reconnect:instances[10].appUrl,readyToConnect:browserInstances[0].appUrl,firstSync:browserInstances[1].appUrl,cachedRefresh:browserInstances[2].appUrl,cachedFailure:browserInstances[3].appUrl,sparse:browserInstances[4].appUrl,budget:browserInstances[5].appUrl})}\n`);
+    await new Promise((resolveHold)=>{process.once("SIGINT",resolveHold);process.once("SIGTERM",resolveHold);});
+  }else{
   await run(process.execPath,["--test","tests/e2e-smoke.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[0].appUrl})});
   process.stdout.write("E2E demo fixture: passed\n");
   await run(process.execPath,["--test","tests/e2e-misconfigured.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[1].appUrl})});
   process.stdout.write("E2E misconfigured fixture: passed\n");
-  await run(process.execPath,["--test","tests/e2e-configured.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[2].appUrl,E2E_APP_ACCESS_TOKEN:accessToken,E2E_API_TOKEN:"e2e-api-token",E2E_CRON_TOKEN:"e2e-cron-token",E2E_ANALYTICS_FIXTURE_NOW:String(analyticsFixtureNow)})});
+  await run(process.execPath,["--test","tests/e2e-configured.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[2].appUrl,E2E_MISMATCH_BASE_URL:instances[2].appUrl.replace("127.0.0.1","localhost"),E2E_APP_ACCESS_TOKEN:accessToken,E2E_API_TOKEN:"e2e-api-token",E2E_CRON_TOKEN:"e2e-cron-token",E2E_ANALYTICS_FIXTURE_NOW:String(analyticsFixtureNow)})});
   process.stdout.write("E2E protected fixture: passed\n");
   await run(process.execPath,["--test","tests/e2e-publisher-recovery.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[3].appUrl,E2E_API_TOKEN:"e2e-api-token",E2E_CRON_TOKEN:"e2e-cron-token"})});
   process.stdout.write("E2E publisher recovery fixture: passed\n");
   await run(process.execPath,["--test","tests/e2e-ai.test.mjs"],{env:safeEnv({E2E_BASE_URL:instances[4].appUrl,E2E_APP_ACCESS_TOKEN:accessToken})});
   process.stdout.write("E2E AI fixture: passed\n");
+  for(const [instance,expected] of [[instances[5],"LOCAL_DATABASE_NOT_INITIALIZED"],[instances[6],"LOCAL_DATABASE_OUTDATED"],[instances[7],"LOCAL_DATABASE_OUTDATED"]])await run(process.execPath,["--test","tests/e2e-schema-health.test.mjs"],{env:safeEnv({E2E_BASE_URL:instance.appUrl,E2E_EXPECTED_SCHEMA_CODE:expected})});
+  process.stdout.write("E2E schema health fixtures: passed\n");
+  await run(process.execPath,["--test","tests/e2e-session-health.test.mjs"],{env:safeEnv({E2E_REFRESH_SUCCESS_URL:instances[8].appUrl,E2E_REFRESH_REJECT_URL:instances[9].appUrl,E2E_NO_REFRESH_URL:instances[10].appUrl,E2E_APP_ACCESS_TOKEN:accessToken})});
+  process.stdout.write("E2E authorization health fixtures: passed\n");
+  }
 }catch(error){
   for(const instance of instances)process.stderr.write(instance.logs());
   throw error;

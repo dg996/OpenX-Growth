@@ -55,6 +55,7 @@ export type AiConfigurationSummary={
   apiKeyConfigured:boolean;
   contentApproved:boolean;
   repliesApproved:boolean;
+  state:"disabled"|"configured_not_approved"|"ready";
 };
 
 export function deploymentPosture():DeploymentPosture {
@@ -91,6 +92,7 @@ export function protectedConfigSummary():{xConfiguration?:XConfigurationSummary;
       apiKeyConfigured:Boolean(config.aiApiKey),
       contentApproved:config.xAiContentApproved,
       repliesApproved:config.xAiRepliesApproved,
+      state:!config.aiApiKey?"disabled":config.xAiContentApproved?"ready":"configured_not_approved",
     },
   };
 }

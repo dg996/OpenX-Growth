@@ -14,7 +14,7 @@ export async function GET(request:NextRequest) {
   const now=Date.now();
   if(deploymentPosture()==="demo"){
     const view=buildAnalyticsView({now,range,posts:[],snapshots:[],followerSnapshots:[]});
-    return NextResponse.json({...view,usage:{requests:0,resources:0,reservedResources:0,writes:0,maxResources:0,maxWrites:0,remainingResources:0,remainingWrites:0,warning:false,reads:0,maxReads:0,events:[],provenance:{source:"demo",recordedAt:now}}});
+    return NextResponse.json({...view,usage:{requests:0,resources:0,reservedResources:0,writes:0,maxResources:0,maxSyncResources:0,maxWrites:0,deploymentMaxResources:0,deploymentMaxWrites:0,userConfigured:false,remainingResources:0,remainingWrites:0,warning:false,reads:0,maxReads:0,events:[],provenance:{source:"demo",recordedAt:now}}});
   }
   const [postRows,snapshots,followers,usage]=await Promise.all([
     getDb().select().from(posts).orderBy(desc(posts.createdAt)).limit(500),

@@ -54,8 +54,10 @@ test("reply failures do not echo transport errors or provider bodies",()=>{
 
 test("sync failures expose only allowlisted operational codes",()=>{
   const source=readFileSync(new URL("../app/api/x/sync/route.ts",import.meta.url),"utf8");
-  assert.match(source,/publicSyncError/);
+  assert.match(source,/const PUBLIC_ERROR=/);
+  assert.match(source,/function safeCode/);
   assert.doesNotMatch(source,/const message=error instanceof Error \? error\.message/);
+  assert.doesNotMatch(source,/response\.json\(\).*error/);
 });
 
 test("application sources contain no owner identity or email",()=>{
@@ -142,6 +144,7 @@ test("protected runtime configuration serializes labels and booleans without sec
     apiKeyConfigured:true,
     contentApproved:true,
     repliesApproved:false,
+    state:"ready",
   });
   for(const secret of [process.env.X_CLIENT_ID,process.env.X_CLIENT_SECRET,process.env.SESSION_SECRET,process.env.APP_ACCESS_TOKEN,process.env.AI_BASE_URL,process.env.AI_API_KEY])assert.ok(secret&&!serialized.includes(secret));
 });
