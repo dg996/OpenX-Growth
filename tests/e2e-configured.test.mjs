@@ -6,6 +6,7 @@ const accessToken = process.env.E2E_APP_ACCESS_TOKEN ?? "";
 const apiToken = process.env.E2E_API_TOKEN ?? "";
 const cronToken = process.env.E2E_CRON_TOKEN ?? "";
 const fixtureNow = Number(process.env.E2E_ANALYTICS_FIXTURE_NOW ?? 0);
+const mismatchBaseUrl=process.env.E2E_MISMATCH_BASE_URL??"";
 
 async function api(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -36,6 +37,10 @@ async function authenticatedSession() {
     token: csrf.body.token,
     cookies: [authCookies,cookieJar(csrf.response)].filter(Boolean).join("; "),
   };
+}
+
+function syncRequest(cookies,token,{key=crypto.randomUUID(),headers={}}={}){
+  return api("/api/x/sync",{method:"POST",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json","idempotency-key":key,...headers},body:"{}"});
 }
 
 test("protected routes reject missing, direct bearer, and tampered application auth", async () => {
@@ -90,6 +95,8 @@ test("CSRF remains a second gate for browser mutations", async () => {
   });
   assert.equal(withoutCsrf.response.status, 403);
   assert.equal(withoutCsrf.body.error, "INVALID_CSRF");
+  const syncWithoutCsrf=await api("/api/x/sync",{method:"POST",headers:{cookie:cookieJar(login.response),"content-type":"application/json","idempotency-key":crypto.randomUUID()},body:"{}"});
+  assert.equal(syncWithoutCsrf.response.status,403);assert.equal(syncWithoutCsrf.body.error,"INVALID_CSRF");assert.equal(syncWithoutCsrf.headers.get("x-openx-e2e-x-call-count"),"0");
 });
 
 test("analytics API preserves snapshot provenance, range filtering, and sufficient-data recommendations", async () => {
@@ -160,6 +167,27 @@ test("configured instance exposes oauth start redirect to X", async () => {
   assert.match(location, /tweet\.read/);
 });
 
+test("oauth origin and state failures stop before contacting X",async()=>{
+  const {cookies}=await authenticatedSession();
+  assert.ok(mismatchBaseUrl);
+  const originFailure=await fetch(`${mismatchBaseUrl}/api/x/oauth/start`,{redirect:"manual",headers:{accept:"application/json",cookie:cookies}});
+  assert.ok([302,307].includes(originFailure.status));assert.match(originFailure.headers.get("location")??"",/x_error=origin_mismatch/);assert.equal(originFailure.headers.get("x-openx-e2e-x-call-count"),"0");assert.equal((originFailure.headers.getSetCookie?.()??[]).some((value)=>value.includes("openx_oauth")&& !value.includes("Max-Age=0")),false);
+
+  const start=await api("/api/x/oauth/start",{redirect:"manual",headers:{cookie:cookies}});
+  const oauthCookies=[cookies,cookieJar(start.response)].filter(Boolean).join("; ");
+  const stateFailure=await api("/api/x/oauth/callback?code=fixture-code&state=wrong-state",{redirect:"manual",headers:{cookie:oauthCookies}});
+  assert.match(stateFailure.headers.get("location")??"",/x_error=oauth_state/);assert.equal(stateFailure.headers.get("x-openx-e2e-x-call-count"),"0");
+});
+
+test("oauth success exchanges authorization without starting a sync",async()=>{
+  const {cookies}=await authenticatedSession();
+  const start=await api("/api/x/oauth/start",{redirect:"manual",headers:{cookie:cookies}});
+  const authorize=new URL(start.headers.get("location"));const state=authorize.searchParams.get("state");assert.ok(state);
+  const callback=await api(`/api/x/oauth/callback?code=fixture-code&state=${encodeURIComponent(state)}`,{redirect:"manual",headers:{cookie:[cookies,cookieJar(start.response)].filter(Boolean).join("; ")}});
+  assert.match(callback.headers.get("location")??"",/x_connected=1/);assert.equal(callback.headers.get("x-openx-e2e-x-call-count"),"1");assert.equal(callback.headers.get("x-openx-e2e-x-call-kinds"),"token");
+  const cache=await api("/api/x/sync",{headers:{cookie:cookies}});assert.equal(cache.body.available,false);assert.equal(cache.headers.get("x-openx-e2e-x-call-count"),"0");
+});
+
 test("configured instance blocks AI until provider and policy flags are set", async () => {
   const { token, cookies } = await authenticatedSession();
   const ai = await api("/api/ai/generate", {
@@ -179,6 +207,7 @@ test("protected status reports sanitized current X and AI configuration", async 
   const {cookies}=await authenticatedSession();
   const status=await api("/api/x/status",{headers:{cookie:cookies}});
   assert.equal(status.response.status,200);
+  assert.equal(status.headers.get("x-openx-e2e-x-call-count"),"0");
   assert.equal(status.body.xConfiguration.xClientIdConfigured,true);
   assert.equal(status.body.xConfiguration.sessionSecretConfigured,true);
   assert.equal(status.body.xConfiguration.appAccessTokenConfigured,true);
@@ -188,15 +217,35 @@ test("protected status reports sanitized current X and AI configuration", async 
     apiKeyConfigured:false,
     contentApproved:false,
     repliesApproved:false,
+    state:"disabled",
   });
   const serialized=JSON.stringify(status.body);
   assert.doesNotMatch(serialized,/https:\/\/api\.openai\.com\/v1|e2e-app-access-token|e2e-session-secret/);
 });
 
+test("authenticated usage controls save bounded caps and reset only local counters",async()=>{
+  const {cookies,token}=await authenticatedSession();
+  const invalid=await api("/api/x/status",{method:"POST",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({intent:"set_local_usage_limits",maxResources:25,maxSyncResources:26,maxWrites:3})});
+  assert.equal(invalid.response.status,400);assert.equal(invalid.body.error,"INVALID_USAGE_CONTROL_INPUT");assert.equal(invalid.headers.get("x-openx-e2e-x-call-count"),"0");
+  const saved=await api("/api/x/status",{method:"POST",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({intent:"set_local_usage_limits",maxResources:25,maxSyncResources:11,maxWrites:3})});
+  assert.equal(saved.response.status,200);assert.deepEqual(saved.body.limits,{maxResources:25,maxSyncResources:11,maxWrites:3});assert.equal(saved.headers.get("x-openx-e2e-x-call-count"),"0");
+  const status=await api("/api/x/status",{headers:{cookie:cookies}});
+  assert.equal(status.body.usage.maxResources,25);assert.equal(status.body.usage.maxSyncResources,11);assert.equal(status.body.usage.maxWrites,3);assert.equal(status.body.usage.userConfigured,true);assert.equal(status.body.sync.next.maxReadResources,11);
+  const reset=await api("/api/x/status",{method:"POST",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({intent:"reset_local_usage"})});
+  assert.equal(reset.response.status,200);assert.equal(reset.body.reset,true);assert.equal(reset.headers.get("x-openx-e2e-x-call-count"),"0");
+  const after=await api("/api/analytics?range=7D",{headers:{cookie:cookies}});
+  assert.equal(after.body.usage.resources,0);assert.equal(after.body.usage.writes,0);
+});
+
 test("configured instance syncs only through the injected X fixture and persists follower provenance", async () => {
   const {cookies,token}=await authenticatedSession();
-  const sync = await api("/api/x/sync?force=1",{headers:{cookie:cookies}});
+  const before=await api("/api/x/sync",{headers:{cookie:cookies}});
+  assert.equal(before.response.status,200);assert.equal(before.body.available,false);assert.equal(before.headers.get("x-openx-e2e-x-call-count"),"0");
+  const firstKey=crypto.randomUUID();
+  const sync = await syncRequest(cookies,token,{key:firstKey});
   assert.equal(sync.response.status, 200,JSON.stringify(sync.body));
+  assert.equal(sync.headers.get("x-openx-e2e-x-call-count"),"3");
+  assert.equal(sync.body.replayed,false);
   assert.equal(sync.body.source,"live");
   assert.equal(sync.body.account.username,"fixture_owner");
   assert.equal(sync.body.account.followersCount,125);
@@ -209,25 +258,42 @@ test("configured instance syncs only through the injected X fixture and persists
   const candidate=sync.body.opportunities.find((row)=>row.id==="feed-1");
   const negative=await api("/api/feedback",{method:"POST",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({targetType:"reply",targetId:candidate.id,vote:-1,context:candidate})});
   assert.equal(negative.response.status,201);
-  const reranked=await api("/api/x/sync?force=1",{headers:{cookie:cookies}});
+  const replay=await syncRequest(cookies,token,{key:firstKey});
+  assert.equal(replay.response.status,200);assert.equal(replay.body.replayed,true);assert.equal(replay.headers.get("x-openx-e2e-x-call-count"),"0");
+  const reranked=await syncRequest(cookies,token);
   assert.ok(reranked.body.opportunities.find((row)=>row.id==="feed-1").relevance<candidate.relevance);
+  const cached=await api("/api/x/sync",{headers:{cookie:cookies}});assert.equal(cached.body.available,true);assert.equal(cached.body.data.syncedAt,reranked.body.syncedAt);assert.equal(cached.headers.get("x-openx-e2e-x-call-count"),"0");
   const analytics=await api("/api/analytics?range=7D",{headers:{cookie:cookies}});
   assert.equal(analytics.body.followers.series.at(-1).followers.value,125);
   assert.equal(analytics.body.followers.series.at(-1).followers.provenance.source,"live");
 });
 
 test("configured sync failures expose only an allowlisted retryable code", async () => {
-  const {cookies}=await authenticatedSession();
-  const sync=await api("/api/x/sync?force=1",{headers:{cookie:cookies,"x-openx-e2e-sync-status":"503"}});
+  const {cookies,token}=await authenticatedSession();
+  const before=await api("/api/x/sync",{headers:{cookie:cookies}});
+  const sync=await syncRequest(cookies,token,{headers:{"x-openx-e2e-sync-status":"503"}});
   assert.equal(sync.response.status,502);
   assert.equal(sync.body.error,"X_API_503");
+  assert.equal(sync.headers.get("x-openx-e2e-x-call-count"),"1");
   assert.doesNotMatch(JSON.stringify(sync.body),/FIXTURE_SYNC_FAILURE|fixture-access-token/);
+  const after=await api("/api/x/sync",{headers:{cookie:cookies}});assert.equal(after.body.available,true);assert.equal(after.body.data.syncedAt,before.body.data.syncedAt);
+});
+
+test("account mismatch stops after identity and preserves the successful cache",async()=>{
+  const {cookies,token}=await authenticatedSession();
+  const before=await api("/api/x/sync",{headers:{cookie:cookies}});
+  const mismatch=await syncRequest(cookies,token,{headers:{"x-openx-e2e-account-id":"different-owner"}});
+  assert.equal(mismatch.response.status,409);assert.equal(mismatch.body.error,"X_ACCOUNT_MISMATCH");assert.equal(mismatch.headers.get("x-openx-e2e-x-call-count"),"1");assert.equal(mismatch.headers.get("x-openx-e2e-x-call-kinds"),"identity");
+  const after=await api("/api/x/sync",{headers:{cookie:cookies}});assert.equal(after.body.data.syncedAt,before.body.data.syncedAt);
 });
 
 test("concurrent sync and write attempts cannot cross local resource or write caps", async () => {
   const {cookies,token}=await authenticatedSession();
-  const syncAttempts=await Promise.all(Array.from({length:12},()=>api("/api/x/sync?force=1",{headers:{cookie:cookies}})));
-  assert.ok(syncAttempts.some((result)=>result.response.status===429));
+  const syncAttempts=await Promise.all(Array.from({length:6},()=>syncRequest(cookies,token,{headers:{"x-openx-e2e-sync-delay-ms":"50"}})));
+  assert.equal(syncAttempts.filter((result)=>result.response.status===200).length,1);
+  assert.equal(syncAttempts.filter((result)=>result.response.status===409&&result.body.error==="SYNC_ALREADY_IN_PROGRESS").length,5);
+  assert.ok(syncAttempts.filter((result)=>result.response.status===409).every((result)=>result.headers.get("x-openx-e2e-x-call-count")==="0"));
+  const budget=await syncRequest(cookies,token);assert.equal(budget.response.status,429);assert.equal(budget.headers.get("x-openx-e2e-x-call-count"),"0");
   const afterReads=await api("/api/analytics?range=7D",{headers:{cookie:cookies}});
   const readUsage=afterReads.body.usage;
   assert.equal(readUsage.maxResources,25);

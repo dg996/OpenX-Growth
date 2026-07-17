@@ -9,7 +9,7 @@ type OnboardingInput = {
 export function decideOnboarding(input: OnboardingInput) {
   if (!input.statusLoaded) return { open: false, persistComplete: false };
   if (input.connected) return { open: false, persistComplete: true };
-  return { open: !input.dismissed, persistComplete: false };
+  return { open: false, persistComplete: false };
 }
 
 export type WorkspaceState =
@@ -78,11 +78,11 @@ export function growthPlanEmptyGuidance(kind: "content" | "replies") {
       };
 }
 
-export function isWorkspaceBlocking(state: WorkspaceState): state is "loading" | "configured-disconnected" {
-  return state === "loading" || state === "configured-disconnected";
+export function isWorkspaceBlocking(state: WorkspaceState): state is "loading" {
+  return state === "loading";
 }
 
-const PUBLIC_SYNC_ERROR = /^(?:X_API_\d{3}(?:_\d{3})?|DAILY_X_(?:RESOURCE|WRITE)_(?:CAP|LIMIT)_REACHED|X_NOT_CONNECTED|X_RECONNECT_REQUIRED|SYNC_FAILED)$/;
+const PUBLIC_SYNC_ERROR = /^(?:X_API_\d{3}(?:_\d{3})?|DAILY_X_(?:RESOURCE|WRITE)_(?:CAP|LIMIT)_REACHED|X_NOT_CONNECTED|X_RECONNECT_REQUIRED|X_ACCOUNT_MISMATCH|SYNC_ALREADY_IN_PROGRESS|SYNC_FAILED)$/;
 
 export function sanitizeSyncError(error: unknown) {
   return typeof error === "string" && PUBLIC_SYNC_ERROR.test(error) ? error : "SYNC_FAILED";
@@ -92,28 +92,34 @@ export function syncErrorGuidance(error: unknown) {
   const code=sanitizeSyncError(error);
   if(code==="DAILY_X_RESOURCE_LIMIT_REACHED"||code==="DAILY_X_RESOURCE_CAP_REACHED")return {
     code,
-    title:"Daily X resource budget reached",
-    body:"The local cap cannot fund another complete sync. Increase MAX_DAILY_X_RESOURCES or wait for the next UTC day; existing verified data remains available.",
+    title:"OpenX daily safety limit reached",
+    body:"OpenX's local safety counter cannot fund another complete sync. This is separate from your paid X Developer Credits. Open Credits & limits to adjust it, reset today's counter, or see the next UTC reset; existing verified data remains available.",
     retryable:false,
+    manageLimits:true,
   };
   if(code==="DAILY_X_WRITE_LIMIT_REACHED"||code==="DAILY_X_WRITE_CAP_REACHED")return {
     code,
     title:"X writes are disabled or exhausted",
-    body:"The local write cap blocked the operation. Existing verified data remains available and no retry should be attempted until the policy changes.",
+    body:"The local write-attempt cap blocked the operation. Open Credits & limits to review or change it. Existing verified data remains available.",
     retryable:false,
+    manageLimits:true,
   };
   if(code==="X_RECONNECT_REQUIRED")return {
     code,
     title:"Reconnect X",
     body:"The stored authorization can no longer refresh. Open Settings to reconnect; existing verified data remains available.",
     retryable:false,
+    manageLimits:false,
   };
+  if(code==="X_ACCOUNT_MISMATCH")return {code,title:"Different X account detected",body:"Existing data was not changed. Reconnect the account used by this workspace.",retryable:false,manageLimits:false};
+  if(code==="SYNC_ALREADY_IN_PROGRESS")return {code,title:"A sync is already running",body:"This request did not start another X sync. Existing saved data remains available.",retryable:false,manageLimits:false};
   const retryable=!/^X_API_429(?:_429)?$/.test(code);
   return {
     code,
     title:"Latest X sync failed",
-    body:`The latest read-only sync stopped with ${code}. Existing verified data remains available.`,
+    body:"The latest read-only sync stopped safely. Existing verified data remains available.",
     retryable,
+    manageLimits:false,
   };
 }
 

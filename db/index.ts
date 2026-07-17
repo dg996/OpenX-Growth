@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/d1";
-import * as schema from "./schema";
+import * as schema from "./schema.ts";
 
 declare global { var __OPENX_ENV__: Record<string,unknown> | undefined; }
 
