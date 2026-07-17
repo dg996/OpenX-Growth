@@ -1,4 +1,4 @@
-# Compliance and policy controls
+ # Compliance and policy controls
 
 OpenX Growth is software, not a certification service. The operator of each fork is responsible for the current X Developer Agreement, automation rules, privacy law, API costs and content published by that instance.
 
