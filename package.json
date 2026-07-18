@@ -42,7 +42,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "drizzle-orm": "0.45.2",
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.25.0",
     "next": "16.2.10",
     "react": "19.2.7",
     "react-dom": "19.2.7",
