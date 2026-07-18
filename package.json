@@ -49,23 +49,23 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
-    "@cloudflare/workers-types": "^4.20260702.1",
-    "@tailwindcss/postcss": "4.2.1",
-    "@types/node": "22.19.19",
-    "@types/react": "19.2.14",
+    "@cloudflare/vite-plugin": "1.45.1",
+    "@cloudflare/workers-types": "^5.20260718.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
+    "@vitejs/plugin-react": "6.0.3",
+    "@vitejs/plugin-rsc": "0.5.28",
     "drizzle-kit": "0.31.10",
-    "eslint": "9.39.4",
+    "eslint": "10.7.0",
     "eslint-config-next": "16.2.10",
     "react-server-dom-webpack": "19.2.7",
-    "tailwindcss": "4.2.1",
-    "typescript": "5.9.3",
-    "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vinext": "0.2.1",
+    "vite": "8.1.5",
+    "wrangler": "4.112.0"
   },
   "overrides": {
     "next": {
