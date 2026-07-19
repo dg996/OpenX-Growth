@@ -81,10 +81,24 @@ function healthyConfiguredHttp(url:string) {
   return healthyHttp(url);
 }
 
-test("normal Wrangler commands inherit the terminal while secret input uses a pipe",()=>{
-  assert.deepEqual(wrapCommandForTerminal("npm",["run","build"]),{
+test("terminal command wrapping supports macOS and Linux without exposing secret input",()=>{
+  assert.deepEqual(wrapCommandForTerminal("npm",["run","build"],"","darwin"),{
     command:"/usr/bin/script",
     args:["-q","/dev/null","npm","run","build"],
+  });
+  assert.deepEqual(wrapCommandForTerminal("npm",["run","build"],"","linux"),{
+    command:"/usr/bin/script",
+    args:["-q","-c","'npm' 'run' 'build'","/dev/null"],
+  });
+  assert.deepEqual(wrapCommandForTerminal("npm",["run","a b","$(touch nope)","quote'arg"],"/private/input","linux"),{
+    command:"/bin/sh",
+    args:[
+      "-c",
+      'input_path=$1; command_text=$2; /bin/cat "$input_path" | /usr/bin/script -q -c "$command_text" /dev/null',
+      "openx-setup",
+      "/private/input",
+      `'npm' 'run' 'a b' '$(touch nope)' 'quote'"'"'arg'`,
+    ],
   });
 });
 

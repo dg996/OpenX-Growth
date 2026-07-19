@@ -47,7 +47,27 @@ export class SetupFailure extends Error {
   }
 }
 
-export function wrapCommandForTerminal(command, args = [], inputPath = "") {
+function quoteShellArgument(value) {
+  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+export function wrapCommandForTerminal(command, args = [], inputPath = "", platform = process.platform) {
+  if (platform === "linux") {
+    const commandText = [command, ...args].map(quoteShellArgument).join(" ");
+    if (inputPath) {
+      return {
+        command: "/bin/sh",
+        args: [
+          "-c",
+          'input_path=$1; command_text=$2; /bin/cat "$input_path" | /usr/bin/script -q -c "$command_text" /dev/null',
+          "openx-setup",
+          inputPath,
+          commandText,
+        ],
+      };
+    }
+    return { command: "/usr/bin/script", args: ["-q", "-c", commandText, "/dev/null"] };
+  }
   if (inputPath) {
     return {
       command: "/bin/sh",
