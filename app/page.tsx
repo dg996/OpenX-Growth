@@ -581,7 +581,7 @@ export default function HomePage() {
 
         <div className="page-content">
           {schemaError?<SchemaRecovery code={schemaError}/>:loadError?<section className="panel full-panel workspace-state" role="alert"><CircleGauge size={28}/><h2>OpenX could not load this workspace</h2><p>Retry local loading. No X or AI service was contacted.</p><button className="outline-btn" onClick={()=>window.location.reload()}>Retry local loading</button></section>:view==="Settings"
-            ? <SettingsView connected={connected} synced={Boolean(lastSync)} config={runtimeConfig} csrf={csrf} syncing={syncBusy} syncError={syncError} onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onCredits={()=>changeView("Credits & limits")} onDisconnected={()=>{setConnected(false);setAccount(undefined);setOpportunityData([]);setSignalData([]);setAnalytics(undefined);setLastSync(undefined);setSyncError("");void refreshRuntimeStatus()}} onOpenGuide={() => setSetupGuide(true)}/>
+            ? <SettingsView connected={connected} synced={Boolean(lastSync)} published={content.some((item)=>item.status==="Published")} config={runtimeConfig} csrf={csrf} syncing={syncBusy} syncError={syncError} onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onCredits={()=>changeView("Credits & limits")} onDisconnected={()=>{setConnected(false);setAccount(undefined);setOpportunityData([]);setSignalData([]);setAnalytics(undefined);setLastSync(undefined);setSyncError("");void refreshRuntimeStatus()}} onOpenGuide={() => setSetupGuide(true)}/>
             : view==="Credits & limits"
               ? <CreditsLimitsView key={`${runtimeConfig.usage?.maxResources??0}:${runtimeConfig.usage?.maxSyncResources??0}:${runtimeConfig.usage?.maxWrites??0}`} config={runtimeConfig} syncing={syncBusy} onSave={saveUsageLimits} onReset={resetLocalUsage}/>
             : isWorkspaceBlocking(workspaceState)
@@ -738,7 +738,7 @@ function AnalyticsView({ range, setRange, data }: { range: string; setRange: (v:
   return <div className="analytics-layout"><section className="metrics-row">{cards.map(({label,metric,suffix="",icon:Icon})=><article className="metric-card" key={label}><div><span>{label}</span><strong>{metric.value.toLocaleString(undefined,{maximumFractionDigits:2})}{suffix}</strong><small><Check size={12}/><ProvenanceText provenance={metric.provenance}/></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}</section><section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">DERIVED SERIES</span><h2>Impressions over time</h2><p><ProvenanceText provenance={data.derived.totals.impressions.provenance}/></p></div><div className="range-tabs">{["7D","28D","90D","1Y"].map((item)=><button className={range===item?"selected":""} key={item} onClick={()=>setRange(item)}>{item}</button>)}</div></div><div className="large-chart"><DataSeriesChart label="Impressions from X snapshots" points={data.derived.series.map((point)=>({recordedAt:point.recordedAt,value:point.impressions.value}))}/></div></section><div className="analytics-grid">{breakdown("Performance by topic",data.derived.byTopic)}{breakdown("Performance by format",data.derived.byFormat)}{breakdown("Best hooks",data.derived.byHook)}{breakdown("Posting-hour performance",data.derived.byHour)}</div></div>;
 }
 
-function SettingsView({ connected, synced, config, csrf, syncing, syncError, onSync, onReconnect, onCredits, onDisconnected, onOpenGuide }: { connected:boolean;synced:boolean;config:AppRuntimeConfig;csrf:string;syncing:boolean;syncError:string;onSync:()=>void;onReconnect:()=>void;onCredits:()=>void;onDisconnected:()=>void;onOpenGuide:()=>void }) {
+function SettingsView({ connected, synced, published, config, csrf, syncing, syncError, onSync, onReconnect, onCredits, onDisconnected, onOpenGuide }: { connected:boolean;synced:boolean;published:boolean;config:AppRuntimeConfig;csrf:string;syncing:boolean;syncError:string;onSync:()=>void;onReconnect:()=>void;onCredits:()=>void;onDisconnected:()=>void;onOpenGuide:()=>void }) {
   const [message,setMessage]=useState("");
   const [setupReferenceOpen,setSetupReferenceOpen]=useState(false);
   const [origin] = useState(() => (typeof window === "undefined" ? "https://your-domain.com" : window.location.origin));
@@ -866,7 +866,7 @@ function SettingsView({ connected, synced, config, csrf, syncing, syncError, onS
           <li className={config.configured?"done":""}>SESSION_SECRET generated</li>
           <li className={connected?"done":""}>Continue with X completed</li>
           <li className={synced?"done":""}>Discover → Sync from X</li>
-          <li>Content → create draft → publish test</li>
+          <li className={published?"done":""}>Content → create draft → publish test</li>
         </ol>
         <p>OAuth tokens never appear in the UI or exports. Disconnect removes encrypted tokens from your database.</p>
         <a href="https://github.com/dg996/OpenX-Growth/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security model <ArrowUpRight size={13}/></a>

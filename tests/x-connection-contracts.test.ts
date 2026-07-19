@@ -35,6 +35,12 @@ test("render and cache reads cannot invoke explicit X or AI operations",()=>{
   assert.doesNotMatch(getHandler,/getXTransport|refreshXAccessToken|writeCache|reserveXUsage/);
 });
 
+test("quick checklist derives publish completion from stored published content",()=>{
+  const page=readFileSync(new URL("../app/page.tsx",import.meta.url),"utf8");
+  assert.match(page,/published=\{content\.some\(\(item\)=>item\.status==="Published"\)\}/);
+  assert.match(page,/<li className=\{published\?"done":""\}>Content → create draft → publish test<\/li>/);
+});
+
 test("explicit sync is mutation-authorized, idempotent, leased, and preflighted before transport",()=>{
   const source=readFileSync(new URL("../app/api/x/sync/route.ts",import.meta.url),"utf8");
   assert.match(source,/authorizeBrowserOrApiMutation/);
