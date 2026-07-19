@@ -472,10 +472,19 @@ export async function runSetup(options = {}) {
 
   let remoteSecrets = new Set();
   await runStep(SETUP_STEPS[5], async () => {
-    const listed = cachedSecretList === null
-      ? await requireRun("npx", ["wrangler", "secret", "list", "--config", "wrangler.jsonc", "--format", "json"], "Could not list Worker secrets. Confirm the Worker exists, then re-run setup.")
-      : { stdout: cachedSecretList };
-    remoteSecrets = parseSecretListOutput(listed.stdout);
+    const listSecrets = () => requireRun("npx", ["wrangler", "secret", "list", "--config", "wrangler.jsonc", "--format", "json"], "Could not list Worker secrets. Confirm the Worker exists, then re-run setup.");
+    let listed = cachedSecretList === null ? await listSecrets() : { stdout: cachedSecretList };
+    try {
+      remoteSecrets = parseSecretListOutput(listed.stdout);
+    } catch {
+      out("Wrangler returned incomplete secret-list output; retrying once safely.");
+      listed = await listSecrets();
+      try {
+        remoteSecrets = parseSecretListOutput(listed.stdout);
+      } catch {
+        throw new SetupFailure("Wrangler did not return a readable secret list after two attempts. No secret was changed; re-run `npm run setup` to resume.");
+      }
+    }
     for (const name of REQUIRED_SECRET_NAMES) {
       const localValue = localValues[name] ?? "";
       if (localValue) formatter.markSecret(localValue);

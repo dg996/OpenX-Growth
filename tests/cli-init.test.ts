@@ -280,6 +280,30 @@ test("existing remote secret without its local value fails closed instead of rot
   assert.equal(fake.state.calls.some((call)=>commandKey(call).includes("secret put SESSION_SECRET")),false);
 });
 
+test("transient malformed secret-list output retries once before changing any secret",async(t)=>{
+  const root=await fixtureRoot();t.after(()=>rm(root,{recursive:true,force:true}));
+  let listCalls=0;
+  const fake=createRunner({overrides:{
+    "npx wrangler secret list --config wrangler.jsonc --format json":()=>{
+      listCalls+=1;
+      return listCalls===1?{code:0,stdout:"incomplete terminal output"}:{code:0,stdout:"[]"};
+    },
+  }});
+  const captured=await captureRun({root,runner:fake.runner,prompt:createPrompt().prompt,httpRunner:healthyHttp,randomBytes:(bytes:number)=>Buffer.alloc(bytes,5),nodeVersion:"v22.13.0"});
+  assert.equal(listCalls,2);
+  assert.match(captured.stdout.join("\n"),/retrying once safely/);
+  assert.deepEqual(fake.state.calls.filter((call)=>commandKey(call).startsWith("npx wrangler secret put ")).map((call)=>call.args[3]),requiredSecrets);
+});
+
+test("repeated malformed secret-list output fails closed without changing secrets",async(t)=>{
+  const root=await fixtureRoot();t.after(()=>rm(root,{recursive:true,force:true}));
+  const fake=createRunner({overrides:{
+    "npx wrangler secret list --config wrangler.jsonc --format json":()=>({code:0,stdout:"incomplete terminal output"}),
+  }});
+  await expectFailure({root,runner:fake.runner,prompt:createPrompt().prompt,httpRunner:healthyHttp,randomBytes:(bytes:number)=>Buffer.alloc(bytes,5),nodeVersion:"v22.13.0"},/after two attempts/);
+  assert.equal(fake.state.calls.some((call)=>commandKey(call).startsWith("npx wrangler secret put ")),false);
+});
+
 test("X_CLIENT_ID upload failure resumes from the saved local value without a rotation",async(t)=>{
   const root=await fixtureRoot();t.after(()=>rm(root,{recursive:true,force:true}));
   const fake=createRunner({overrides:{
