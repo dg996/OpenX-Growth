@@ -55,7 +55,7 @@ type ContentItem = {
   lastError?: string;
 };
 
-type SavePostInput = {text:string;thread:string[];scheduledAt?:number;evergreen:boolean;evergreenIntervalDays:number;generated:boolean;topic?:string;hook?:string};
+type SavePostInput = {text:string;thread:string[];scheduledAt?:number;evergreen:boolean;evergreenIntervalDays?:number;generated:boolean;topic?:string;hook?:string};
 type XConfigurationSummary={xClientIdConfigured:boolean;xClientSecretConfigured:boolean;sessionSecretConfigured:boolean;appUrlConfigured:boolean;appAccessTokenConfigured:boolean;cronSecretConfigured:boolean;apiTokenConfigured:boolean};
 type AiConfigurationSummary={provider:"OpenRouter"|"OpenAI"|"Custom OpenAI-compatible";model:string;apiKeyConfigured:boolean;contentApproved:boolean;repliesApproved:boolean;state?:"disabled"|"configured_not_approved"|"ready"};
 type AuthorizationState="disconnected"|"connected"|"authorization_check_required"|"reconnect_required"|"oauth_in_progress"|"oauth_failed";
@@ -203,7 +203,7 @@ function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnable
   const updatePart=(index:number,value:string)=>setParts((current)=>current.map((part,position)=>position===index?value:part));
   const close=()=>{aiController.current?.abort();onClose()};
   const improve=async(action:AiRewriteAction,prompt:string)=>{if(!aiReady||aiInFlight.current)return;const context=parts.join("\n---\n");if(!context.trim()){setAiError("AI_SOURCE_REQUIRED");return}const controller=new AbortController();aiInFlight.current=true;aiController.current=controller;setActiveAi(action);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt,context},controller.signal);const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){if(!controller.signal.aborted)setAiError(failure instanceof Error?failure.message:"")}finally{if(aiController.current===controller)aiController.current=null;aiInFlight.current=false;setActiveAi(null)}};
-  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(saving||aiInFlight.current||!clean.length||clean.some((part)=>part.length>280))return;setSaving(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setSaving(false);if(ok){setDone(true);setTimeout(close,650)}else setError("Could not save this post.")};
+  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(saving||aiInFlight.current||!clean.length||clean.some((part)=>part.length>280))return;setSaving(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,...(evergreen?{evergreenIntervalDays:interval}:{}),generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setSaving(false);if(ok){setDone(true);setTimeout(close,650)}else setError("Could not save this post.")};
   const guidance=aiError?aiErrorGuidance(aiError):null;
   return (
     <div className="modal-backdrop" onMouseDown={close}>

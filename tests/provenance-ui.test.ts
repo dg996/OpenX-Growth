@@ -135,3 +135,9 @@ test("Composer AI controls guard duplicate requests and guide empty-source click
   assert.match(page,/aiReady=\{aiReady\}/);
   assert.match(page,/const aiReady=isAiContentReady\(runtimeConfig\)/);
 });
+
+test("Composer omits the evergreen interval when evergreen is disabled", () => {
+  const composer=page.slice(page.indexOf("function Composer"),page.indexOf("function ReplyComposer"));
+  assert.match(composer,/\.\.\.\(evergreen\?\{evergreenIntervalDays:interval\}:\{\}\)/);
+  assert.doesNotMatch(composer,/evergreen,evergreenIntervalDays:interval/);
+});
