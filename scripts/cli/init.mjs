@@ -46,13 +46,17 @@ export class SetupFailure extends Error {
   }
 }
 
+export function commandStdinMode(input = "") {
+  return input ? "pipe" : "inherit";
+}
+
 export async function defaultCommandRunner({ command, args = [], cwd, input = "" }) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, {
       cwd,
       env: process.env,
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: [commandStdinMode(input), "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -61,7 +65,6 @@ export async function defaultCommandRunner({ command, args = [], cwd, input = ""
     child.on("error", (error) => resolveRun({ code: 127, stdout, stderr: `${stderr}${error.message}` }));
     child.on("close", (code, signal) => resolveRun({ code: code ?? (signal ? 130 : 1), signal, stdout, stderr }));
     if (input) child.stdin.end(input);
-    else child.stdin.end();
   });
 }
 

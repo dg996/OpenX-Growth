@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runSetup, SetupFailure } from "../scripts/cli/init.mjs";
+import { commandStdinMode, runSetup, SetupFailure } from "../scripts/cli/init.mjs";
 
 const databaseId="11111111-2222-4333-8444-555555555555";
 const appUrl="https://openx-growth.fixture.workers.dev";
@@ -80,6 +80,11 @@ function healthyConfiguredHttp(url:string) {
   if(url.endsWith("/api/compliance"))return {status:200,body:{checks:{accessProtected:true,officialApiOnly:true,xConfigured:true}}};
   return healthyHttp(url);
 }
+
+test("normal Wrangler commands inherit the terminal while secret input uses a pipe",()=>{
+  assert.equal(commandStdinMode(""),"inherit");
+  assert.equal(commandStdinMode("secret-value\n"),"pipe");
+});
 
 async function captureRun(options:Parameters<typeof runSetup>[0]) {
   const stdout:string[]=[];const stderr:string[]=[];
