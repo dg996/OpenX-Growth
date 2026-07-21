@@ -6,6 +6,7 @@ import {
   AUTH_COOKIE,
   authorizeBrowserOrApiRead,
   authorizeBrowserRead,
+  createAppAuthCookie,
   hasAppAccess,
   seal,
 } from "../lib/security.ts";
@@ -37,6 +38,9 @@ test("deployment posture permits public demo only while X is unconfigured", asyn
   const denied=await authorizeBrowserRead(request());
   assert.equal(denied?.status,503);
   assert.equal(((await denied?.json()) as {error:string}).error,"APP_ACCESS_TOKEN_REQUIRED");
+  const apiDenied=await authorizeBrowserOrApiRead(request({authorization:"Bearer api-token"}));
+  assert.equal(apiDenied?.status,503);
+  assert.equal(((await apiDenied?.json()) as {error:string}).error,"APP_ACCESS_TOKEN_REQUIRED");
 });
 
 test("configured protected instances keep browser, API, and cron authorities separate", async () => {
@@ -52,6 +56,8 @@ test("configured protected instances keep browser, API, and cron authorities sep
   assert.equal((await authorizeBrowserRead(request({authorization:"Bearer app-token"})))?.status,401);
   assert.equal((await authorizeBrowserRead(request({authorization:"Bearer api-token"})))?.status,401);
   assert.equal((await authorizeBrowserOrApiRead(request({authorization:"Bearer api-token"}))),null);
+  assert.equal((await authorizeBrowserOrApiRead(request({authorization:"Bearer wrong-token"})))?.status,401);
+  assert.equal((await authorizeBrowserOrApiRead(request()))?.status,401);
   assert.equal((await authorizeBrowserOrApiRead(request({authorization:"Bearer cron-token"})))?.status,401);
 });
 
@@ -61,9 +67,13 @@ test("browser access rejects expired or tampered cookies", async () => {
     SESSION_SECRET:"test-session-secret-with-more-than-thirty-two-characters",
     APP_ACCESS_TOKEN:"app-token",
   });
-  const valid=await seal({authorized:true,expiresAt:Date.now()+60_000});
-  const expired=await seal({authorized:true,expiresAt:Date.now()-1});
+  const valid=await createAppAuthCookie("app-token",Date.now()+60_000);
+  const expired=await createAppAuthCookie("app-token",Date.now()-1);
+  const stale=await createAppAuthCookie("old-app-token",Date.now()+60_000);
+  const legacy=await seal({authorized:true,expiresAt:Date.now()+60_000});
   assert.equal(await hasAppAccess(request({cookies:{[AUTH_COOKIE]:valid}})),true);
   assert.equal(await hasAppAccess(request({cookies:{[AUTH_COOKIE]:expired}})),false);
   assert.equal(await hasAppAccess(request({cookies:{[AUTH_COOKIE]:`${valid}tampered`}})),false);
+  assert.equal(await hasAppAccess(request({cookies:{[AUTH_COOKIE]:stale}})),false);
+  assert.equal(await hasAppAccess(request({cookies:{[AUTH_COOKIE]:legacy}})),false);
 });

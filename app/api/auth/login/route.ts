@@ -2,18 +2,18 @@ import { and, eq, like, lt } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "../../../../db";
 import { secureStore } from "../../../../db/schema";
-import { appConfig } from "../../../../lib/config";
-import { AUTH_COOKIE, cookieName, safeEqual, seal, unseal } from "../../../../lib/security";
+import { getEffectiveConfig } from "../../../../lib/runtime-settings";
+import { AUTH_COOKIE, cookieName, createAppAuthCookie, safeEqual, seal, unseal } from "../../../../lib/security";
 
 const WINDOW_MS=15*60_000, MAX_ATTEMPTS=5;
 async function requestKey(request:NextRequest) {
-  const source=request.headers.get("cf-connecting-ip")??request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()??"unknown";
+  const source=request.headers.get("cf-connecting-ip")?.trim()||"global-login";
   const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(source));
   return [...new Uint8Array(digest)].slice(0,12).map((byte)=>byte.toString(16).padStart(2,"0")).join("");
 }
 
 export async function POST(request:NextRequest) {
-  const expected=appConfig().appAccessToken;
+  const expected=(await getEffectiveConfig()).appAccessToken;
   if(!expected)return NextResponse.json({error:"APP_ACCESS_TOKEN_REQUIRED"},{status:503});
   const key=`auth-attempt:${await requestKey(request)}`,now=Date.now(),db=getDb();
   await db.delete(secureStore).where(and(like(secureStore.key,"auth-attempt:%"),lt(secureStore.updatedAt,now-WINDOW_MS)));
@@ -31,6 +31,6 @@ export async function POST(request:NextRequest) {
   const response=NextResponse.json({ok:true});
   const secure=request.nextUrl.protocol==="https:";
   const expiresAt=Date.now()+2_592_000_000;
-  response.cookies.set(cookieName(AUTH_COOKIE,secure),await seal({authorized:true,expiresAt}),{httpOnly:true,secure,sameSite:"strict",path:"/",maxAge:2_592_000});
+  response.cookies.set(cookieName(AUTH_COOKIE,secure),await createAppAuthCookie(expected,expiresAt),{httpOnly:true,secure,sameSite:"strict",path:"/",maxAge:2_592_000});
   return response;
 }

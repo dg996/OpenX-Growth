@@ -1,7 +1,7 @@
 import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { posts, publishEvents } from "../db/schema";
-import { appConfig } from "./config";
+import { getEffectiveConfig } from "./runtime-settings";
 import { publishablePostSchema } from "./post-validation";
 import {
   classifyPublishClaim,
@@ -76,8 +76,9 @@ export async function reconcileStoredPost(record:PostRecord,command:{resolution:
 
 export async function publishStoredPost(record:PostRecord,options:PublishOptions={}) {
   const db=getDb();const clock=options.clock??runtimeClock;const fault=options.fault??runtimeFault;const leaseMs=options.leaseMs??60_000;const transport=options.transport??getXTransport();
+  const config=await getEffectiveConfig();
   if(record.xPostId&&record.status==="published")return {ok:true,id:record.xPostId,alreadyPublished:true};
-  if(record.generated&&!appConfig().xAiContentApproved)throw new Error("AI_CONTENT_APPROVAL_REQUIRED");
+  if(record.generated&&!config.xAiContentApproved)throw new Error("AI_CONTENT_APPROVAL_REQUIRED");
   let current=await db.select().from(posts).where(eq(posts.id,record.id)).get();if(!current)throw new Error("POST_NOT_FOUND");
   if(current.xPostId&&current.status==="published")return {ok:true,id:current.xPostId,alreadyPublished:true};
   if(current.publishedIdsJson&&!current.publishReceiptsJson&&current.status!=="published"){
@@ -107,7 +108,7 @@ export async function publishStoredPost(record:PostRecord,options:PublishOptions
   let session=sessionAtClaim;
   try{
     const content=preflight(claimed);
-    if(claimed.generated&&!appConfig().xAiContentApproved)throw new Error("AI_CONTENT_APPROVAL_REQUIRED");
+    if(claimed.generated&&!config.xAiContentApproved)throw new Error("AI_CONTENT_APPROVAL_REQUIRED");
     const receipts=parsePublishReceipts(claimed.publishReceiptsJson);
     const publishedIds=receipts.map((receipt)=>receipt.xPostId);
     for(let index=receipts.length;index<content.parts.length;index++){
@@ -149,7 +150,7 @@ export async function publishStoredPost(record:PostRecord,options:PublishOptions
     const completed=await db.update(posts).set({status:"published",publishedAt,lastError:null,deliveryState:"confirmed",claimToken:null,claimExpiresAt:null,updatedAt:publishedAt}).where(and(eq(posts.id,record.id),eq(posts.status,"publishing"),eq(posts.claimToken,claimToken))).returning().get();
     if(!completed)throw new Error("PUBLISH_CLAIM_LOST");
     await recordEvent(record.id,"published",publishedAt);
-    if(claimed.evergreen&&appConfig().evergreenEnabled){
+    if(claimed.evergreen&&config.evergreenEnabled){
       const next=publishedAt+claimed.evergreenIntervalDays*86_400_000;
       await db.insert(posts).values({...claimed,id:crypto.randomUUID(),status:"scheduled",scheduledAt:next,publishedAt:null,xPostId:null,publishedIdsJson:null,publishReceiptsJson:null,claimToken:null,claimExpiresAt:null,deliveryState:"idle",attempts:0,lastError:null,createdAt:publishedAt,updatedAt:publishedAt}).onConflictDoNothing();
     }

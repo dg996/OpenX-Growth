@@ -26,6 +26,20 @@ function cookieJar(response) {
   return raw.map((entry) => entry.split(";")[0]).join("; ");
 }
 
+function mergeCookieHeaders(...headers) {
+  const values = new Map();
+  for (const header of headers.filter(Boolean)) {
+    for (const entry of header.split(";")) {
+      const trimmed=entry.trim();
+      if(!trimmed)continue;
+      const separator=trimmed.indexOf("=");
+      if(separator<1)continue;
+      values.set(trimmed.slice(0,separator),trimmed);
+    }
+  }
+  return [...values.values()].join("; ");
+}
+
 async function authenticatedSession() {
   assert.ok(accessToken,"E2E_APP_ACCESS_TOKEN is required");
   const login=await api("/api/auth/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:accessToken})});
@@ -71,8 +85,18 @@ test("browser, API, and cron authorities stay separate", async () => {
   });
   assert.equal(apiWrite.response.status, 201, JSON.stringify(apiWrite.body));
 
-  const apiOnBrowserOnly = await api("/api/x/status", { headers: { authorization: `Bearer ${apiToken}` } });
-  assert.equal(apiOnBrowserOnly.response.status, 401);
+  const apiStatus = await api("/api/x/status", { headers: { authorization: `Bearer ${apiToken}` } });
+  assert.equal(apiStatus.response.status, 200);
+  assert.equal(apiStatus.body.schema.state,"ready");
+  assert.equal(apiStatus.body.origin.currentMatchesCanonical,true);
+  const wrongApiStatus = await api("/api/x/status", { headers: { authorization: "Bearer wrong-token" } });
+  assert.equal(wrongApiStatus.response.status, 401);
+  const apiStatusMutation = await api("/api/x/status", {
+    method: "POST",
+    headers: { authorization: `Bearer ${apiToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ intent: "reset_local_usage" }),
+  });
+  assert.equal(apiStatusMutation.response.status, 401);
   const cronOnApi = await api("/api/posts", { headers: { authorization: `Bearer ${cronToken}` } });
   assert.equal(cronOnApi.response.status, 401);
   const apiOnCron = await api("/api/cron/publish", { method: "POST", headers: { authorization: `Bearer ${apiToken}` } });
@@ -180,11 +204,33 @@ test("oauth origin and state failures stop before contacting X",async()=>{
 });
 
 test("oauth success exchanges authorization without starting a sync",async()=>{
-  const {cookies}=await authenticatedSession();
+  const {cookies,token}=await authenticatedSession();
   const start=await api("/api/x/oauth/start",{redirect:"manual",headers:{cookie:cookies}});
   const authorize=new URL(start.headers.get("location"));const state=authorize.searchParams.get("state");assert.ok(state);
   const callback=await api(`/api/x/oauth/callback?code=fixture-code&state=${encodeURIComponent(state)}`,{redirect:"manual",headers:{cookie:[cookies,cookieJar(start.response)].filter(Boolean).join("; ")}});
   assert.match(callback.headers.get("location")??"",/x_connected=1/);assert.equal(callback.headers.get("x-openx-e2e-x-call-count"),"1");assert.equal(callback.headers.get("x-openx-e2e-x-call-kinds"),"token");
+  const connectedCookies=mergeCookieHeaders(cookies,cookieJar(callback.response));
+  const beforeChange=await api("/api/x/status",{headers:{cookie:connectedCookies}});
+  assert.equal(beforeChange.body.connected,true);
+  const currentSettings=await api("/api/settings",{headers:{cookie:connectedCookies}});
+  assert.equal(currentSettings.response.status,200);
+  const changed=await api("/api/settings",{method:"PATCH",headers:{cookie:connectedCookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({section:"x",clientId:"e2e-rotated-x-client-id",clearClientSecret:true})});
+  assert.equal(changed.response.status,200,JSON.stringify(changed.body));
+  assert.equal(changed.body.xAuthorizationCleared,true);
+  assert.ok((changed.response.headers.getSetCookie?.()??[]).some((value)=>value.startsWith("openx_session=")&&value.includes("Max-Age=0")));
+  const replayedAfterChange=await api("/api/x/status",{headers:{cookie:connectedCookies}});
+  assert.equal(replayedAfterChange.body.connected,false);
+  assert.equal(replayedAfterChange.headers.get("x-openx-e2e-x-call-count"),"0");
+  const clearedCookies=mergeCookieHeaders(connectedCookies,cookieJar(changed.response));
+  const afterChange=await api("/api/x/status",{headers:{cookie:clearedCookies}});
+  assert.equal(afterChange.body.connected,false);
+  assert.equal(afterChange.headers.get("x-openx-e2e-x-call-count"),"0");
+  const restored=await api("/api/settings",{method:"PATCH",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({section:"x",clientId:currentSettings.body.x.clientId})});
+  assert.equal(restored.response.status,200,JSON.stringify(restored.body));
+  const restart=await api("/api/x/oauth/start",{redirect:"manual",headers:{cookie:cookies}});
+  const restoredAuthorize=new URL(restart.headers.get("location"));const restoredState=restoredAuthorize.searchParams.get("state");assert.ok(restoredState);
+  const restoredCallback=await api(`/api/x/oauth/callback?code=fixture-code&state=${encodeURIComponent(restoredState)}`,{redirect:"manual",headers:{cookie:[cookies,cookieJar(restart.response)].filter(Boolean).join("; ")}});
+  assert.match(restoredCallback.headers.get("location")??"",/x_connected=1/);assert.equal(restoredCallback.headers.get("x-openx-e2e-x-call-kinds"),"token");
   const cache=await api("/api/x/sync",{headers:{cookie:cookies}});assert.equal(cache.body.available,false);assert.equal(cache.headers.get("x-openx-e2e-x-call-count"),"0");
 });
 
@@ -221,6 +267,38 @@ test("protected status reports sanitized current X and AI configuration", async 
   });
   const serialized=JSON.stringify(status.body);
   assert.doesNotMatch(serialized,/https:\/\/api\.openai\.com\/v1|e2e-app-access-token|e2e-session-secret/);
+});
+
+test("Settings securely updates AI configuration without exposing the provider key",async()=>{
+  const secret="e2e-openrouter-key-never-returned";
+  const anonymous=await api("/api/settings");
+  assert.equal(anonymous.response.status,401);
+  const directApi=await api("/api/settings",{headers:{authorization:`Bearer ${apiToken}`}});
+  assert.equal(directApi.response.status,401);
+
+  const {cookies,token}=await authenticatedSession();
+  const current=await api("/api/settings",{headers:{cookie:cookies}});
+  assert.equal(current.response.status,200);
+  assert.equal(current.body.ai.apiKeyConfigured,false);
+  assert.equal(JSON.stringify(current.body).includes(secret),false);
+
+  const withoutCsrf=await api("/api/settings",{method:"PATCH",headers:{cookie:cookies,"content-type":"application/json"},body:JSON.stringify({section:"ai",baseUrl:"https://openrouter.ai/api/v1",model:"openai/gpt-5-mini",apiKey:secret,contentApproved:false,repliesApproved:false})});
+  assert.equal(withoutCsrf.response.status,403);
+  const invalid=await api("/api/settings",{method:"PATCH",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({section:"ai",baseUrl:"https://127.0.0.1/v1",model:"fixture",contentApproved:false,repliesApproved:false})});
+  assert.equal(invalid.response.status,400);
+
+  const saved=await api("/api/settings",{method:"PATCH",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({section:"ai",baseUrl:"https://openrouter.ai/api/v1",model:"openai/gpt-5-mini",apiKey:secret,contentApproved:false,repliesApproved:false})});
+  assert.equal(saved.response.status,200,JSON.stringify(saved.body));
+  assert.equal(saved.body.settings.ai.provider,"OpenRouter");
+  assert.equal(saved.body.settings.ai.apiKeyConfigured,true);
+  assert.equal(JSON.stringify(saved.body).includes(secret),false);
+  const status=await api("/api/x/status",{headers:{cookie:cookies}});
+  assert.deepEqual(status.body.aiConfiguration,{provider:"OpenRouter",model:"openai/gpt-5-mini",apiKeyConfigured:true,contentApproved:false,repliesApproved:false,state:"configured_not_approved"});
+  assert.equal(JSON.stringify(status.body).includes(secret),false);
+
+  const cleared=await api("/api/settings",{method:"PATCH",headers:{cookie:cookies,"x-csrf-token":token,"content-type":"application/json"},body:JSON.stringify({section:"ai",baseUrl:"https://api.openai.com/v1",model:"gpt-5-mini",clearApiKey:true,contentApproved:false,repliesApproved:false})});
+  assert.equal(cleared.response.status,200);
+  assert.equal(cleared.body.settings.ai.apiKeyConfigured,false);
 });
 
 test("authenticated usage controls save bounded caps and reset only local counters",async()=>{
@@ -325,4 +403,6 @@ test("login failures reach a deterministic local rate limit", async () => {
   const blocked=await api("/api/auth/login",{method:"POST",headers:{"content-type":"application/json","x-forwarded-for":"192.0.2.10"},body:JSON.stringify({token:"invalid-e2e-token"})});
   assert.equal(blocked.response.status,429);
   assert.equal(blocked.body.error,"TOO_MANY_ATTEMPTS");
+  const spoofed=await api("/api/auth/login",{method:"POST",headers:{"content-type":"application/json","x-forwarded-for":"198.51.100.77"},body:JSON.stringify({token:"invalid-e2e-token"})});
+  assert.equal(spoofed.response.status,429);
 });

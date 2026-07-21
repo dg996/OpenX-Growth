@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { exchangeAuthorizationCode } from "../../../../../lib/x-oauth";
 import { configuredAccessGateResponse, cookieName, OAUTH_COOKIE, readCookie, setXSession, unseal } from "../../../../../lib/security";
 import { markAuthorizationConnected, storeXSession } from "../../../../../lib/session-store";
-import { appConfig } from "../../../../../lib/config";
+import { getEffectiveConfig } from "../../../../../lib/runtime-settings";
 import { canonicalOriginStatus } from "../../../../../lib/canonical-origin";
 import { getSchemaHealth } from "../../../../../lib/schema-health";
 
@@ -16,12 +16,12 @@ function failed(request:NextRequest,code:string) {
 }
 
 export async function GET(request:NextRequest) {
-  const blocked=configuredAccessGateResponse();if(blocked)return blocked;
+  const blocked=await configuredAccessGateResponse();if(blocked)return blocked;
   const schema=await getSchemaHealth();if(schema.state!=="ready")return failed(request,"database_setup");
   const code = request.nextUrl.searchParams.get("code");
   const state = request.nextUrl.searchParams.get("state");
   const oauth = await unseal<OAuthState>(readCookie(request,OAUTH_COOKIE));
-  const origin=canonicalOriginStatus(appConfig().appUrl,request.nextUrl.origin);
+  const origin=canonicalOriginStatus((await getEffectiveConfig()).appUrl,request.nextUrl.origin);
   let redirectOrigin="";try{redirectOrigin=oauth?new URL(oauth.redirectUri).origin:""}catch{}
   if(!origin.valid||!origin.currentMatchesCanonical||redirectOrigin!==origin.canonicalOrigin)return failed(request,"origin_mismatch");
   if (!code || !state || !oauth || state !== oauth.state || !Number.isFinite(oauth.createdAt) || Date.now()-oauth.createdAt>600_000) return failed(request,"oauth_state");

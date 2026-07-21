@@ -1,7 +1,7 @@
 import { desc, eq, lt } from "drizzle-orm";
 import { getD1, getDb } from "../db";
 import { apiUsage, syncCache, xUsageEvents } from "../db/schema";
-import { appConfig } from "./config";
+import { getEffectiveConfig } from "./runtime-settings";
 import { parseUserXUsageLimits, xUsageWindow, type UserXUsageLimits } from "./usage-policy";
 import type { XUsageAccounting, XUsageOutcome, XUsageReservation } from "./x-transport";
 
@@ -9,7 +9,7 @@ const safeLimit=(value:number,fallback:number)=>Number.isFinite(value)&&value>=0
 const USER_USAGE_LIMITS_KEY="openx-user-usage-limits";
 
 export async function getXUsageLimits() {
-  const config=appConfig();
+  const config=await getEffectiveConfig();
   const deploymentMaxResources=safeLimit(config.maxDailyResources,500),deploymentMaxWrites=safeLimit(config.maxDailyWrites,50);
   const stored=await readRetainedCache<UserXUsageLimits>(USER_USAGE_LIMITS_KEY);
   const override=parseUserXUsageLimits(stored?.data);

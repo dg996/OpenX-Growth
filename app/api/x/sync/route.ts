@@ -2,7 +2,7 @@ import { desc } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "../../../../db";
 import { analyticsSnapshots, feedback, followerSnapshots } from "../../../../db/schema";
-import { appConfig } from "../../../../lib/config";
+import { getEffectiveConfig } from "../../../../lib/runtime-settings";
 import { claimSyncLease, getUsage, readIdempotentResult, readRetainedCache, releaseSyncLease, writeCache, writeIdempotentResult, writeSyncStatus } from "../../../../lib/data";
 import { chunkForD1Insert } from "../../../../lib/d1";
 import { authorizeBrowserOrApiMutation, authorizeBrowserOrApiRead, clearXSession, configuredInstanceResponse, getXSession, setXSession } from "../../../../lib/security";
@@ -39,7 +39,7 @@ async function strictEmptyBody(request:NextRequest) {
 }
 
 export async function POST(request:NextRequest) {
-  const blocked=configuredInstanceResponse();if(blocked)return blocked;
+  const blocked=await configuredInstanceResponse();if(blocked)return blocked;
   const denied=await authorizeBrowserOrApiMutation(request);if(denied)return denied;
   if([...request.nextUrl.searchParams.keys()].length)return response({error:"INVALID_QUERY"},400);
   const idempotencyKey=request.headers.get("idempotency-key")??"";
@@ -67,7 +67,7 @@ export async function POST(request:NextRequest) {
   };
 
   try{
-    const usageBefore=await getUsage();
+    const [usageBefore,config]=await Promise.all([getUsage(),getEffectiveConfig()]);
     const cookieSession=await getXSession(request);
     const authorization=await resolveStoredAuthorization(cookieSession);
     const plan=syncResourcePlan(usageBefore.remainingResources,authorization.state==="authorization_check_required",usageBefore.maxSyncResources);
@@ -115,9 +115,9 @@ export async function POST(request:NextRequest) {
     const rankingFeedback=feedbackRows.flatMap<RankingFeedback>((row)=>{if(row.vote!==1&&row.vote!==-1)return [];let context:unknown;if(row.contextJson){try{context=JSON.parse(row.contextJson)}catch{context=undefined}}return [{targetType:row.targetType,targetId:row.targetId,vote:row.vote,context,createdAt:row.createdAt}];});
     const rankingOptions={clock:()=>now,ownPosts,feedback:rankingFeedback};
     const opportunities=rankReplyOpportunities(feed,timeline.data?.includes?.users??[],rankingOptions);
-    if(!appConfig().xAiRepliesApproved)for(const opportunity of opportunities)opportunity.suggestedReply="";
+    if(!config.xAiRepliesApproved)for(const opportunity of opportunities)opportunity.suggestedReply="";
     const payload:SyncPayload={source:"live",syncedAt:new Date(now).toISOString(),account:{id:me.data.data.id,name:me.data.data.name,username:me.data.data.username,profileImageUrl:me.data.data.profile_image_url,followersCount:followerCount},opportunities,ideas:generateIdeas(feed,ownPosts,rankingOptions),usage:await getUsage()};
-    await writeCache("x-growth-sync",payload,appConfig().syncTtlSeconds);
+    await writeCache("x-growth-sync",payload,config.syncTtlSeconds);
     await Promise.all([markAuthorizationConnected(me.data.data.id),writeSyncStatus({state:"succeeded",lastAttemptAt:attemptAt,lastSuccessfulAt:now,lastErrorCode:null})]);
     const success=await terminal(200,payload as unknown as Record<string,unknown>);
     if(refreshedSession)await setXSession(success,session,request.nextUrl.protocol==="https:");

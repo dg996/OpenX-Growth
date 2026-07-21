@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { activeSyncLease, deleteXCache } from "../../../../lib/data";
 import { authorizeBrowserMutation, clearXSession, getXSession } from "../../../../lib/security";
-import { deleteAuthorizationHealth, deleteXSession, resolveStoredAuthorization } from "../../../../lib/session-store";
+import { deleteXSession, markAuthorizationDisconnected, resolveStoredAuthorization } from "../../../../lib/session-store";
 
 export async function POST(request:NextRequest) {
   const denied=await authorizeBrowserMutation(request);if(denied)return denied;
@@ -17,7 +17,7 @@ export async function POST(request:NextRequest) {
     clearXSession(response,request.nextUrl.protocol==="https:");
     return response;
   }
-  await Promise.all([deleteXSession(),deleteAuthorizationHealth(),deleteXCache()]);
+  await Promise.all([deleteXSession(),markAuthorizationDisconnected(),deleteXCache()]);
   const response=NextResponse.json({connected:false,retainedData:true});
   clearXSession(response,request.nextUrl.protocol==="https:");
   return response;

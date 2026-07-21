@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deploymentPosture, protectedConfigSummary, publicConfig } from "../../../../lib/config";
-import { authorizeBrowserMutation, authorizeBrowserRead, getXSession } from "../../../../lib/security";
+import { authorizeBrowserMutation, authorizeBrowserOrApiRead, getXSession } from "../../../../lib/security";
 import { resolveStoredAuthorization } from "../../../../lib/session-store";
 import { getSchemaHealth, schemaErrorCode } from "../../../../lib/schema-health";
 import { canonicalOriginStatus, safeOriginDiagnostic } from "../../../../lib/canonical-origin";
-import { appConfig } from "../../../../lib/config";
+import { getEffectiveConfig } from "../../../../lib/runtime-settings";
 import { activeSyncLease, claimSyncLease, getUsage, readRetainedCache, readSyncStatus, releaseSyncLease, resetDailyXUsage, setXUsageLimits } from "../../../../lib/data";
 import { clearExpiredBudgetState, parseUserXUsageLimits, syncResourcePlan, xUsageWindow } from "../../../../lib/usage-policy";
 import { getD1 } from "../../../../db";
@@ -29,8 +29,9 @@ export async function GET(request:NextRequest) {
   const now=Date.now();
   const schema=await getSchemaHealth();
   if(schema.state!=="ready")return NextResponse.json({error:schemaErrorCode(schema.state),schema},{status:503,headers:{"Cache-Control":"no-store"}});
-  const denied=await authorizeBrowserRead(request);if(denied)return denied;
-  const posture=deploymentPosture();
+  const denied=await authorizeBrowserOrApiRead(request);if(denied)return denied;
+  const config=await getEffectiveConfig();
+  const posture=deploymentPosture(config);
   const authorization=posture==="demo"?{state:"disconnected" as const,session:null,lastVerifiedAt:undefined,lastVerifiedAccountId:undefined}:await resolveStoredAuthorization(await getXSession(request));
   const [usage,cache,status,lease]=await Promise.all([getUsage(now),readRetainedCache<CachedSync>("x-growth-sync"),readSyncStatus(),activeSyncLease(now)]);
   const needsRefresh=authorization.state==="authorization_check_required";
@@ -39,14 +40,14 @@ export async function GET(request:NextRequest) {
   const storedSyncState=status?.data.state??(cache?"succeeded":"never");
   const syncState=lease?"in_progress":clearExpiredBudgetState(storedSyncState,next.enabled,Boolean(cache));
   const usageWindow=xUsageWindow(now);
-  const origin=canonicalOriginStatus(appConfig().appUrl,request.nextUrl.origin);
+  const origin=canonicalOriginStatus(config.appUrl,request.nextUrl.origin);
   if(!origin.currentMatchesCanonical&&process.env.NODE_ENV!=="production")console.warn("[openx:origin-mismatch]",{
-    configured:safeOriginDiagnostic(appConfig().appUrl),
+    configured:safeOriginDiagnostic(config.appUrl),
     nextUrl:safeOriginDiagnostic(request.nextUrl.origin),
     requestUrl:safeOriginDiagnostic(request.url),
   });
   return NextResponse.json({
-    connected:authorization.state==="connected",...publicConfig(),...protectedConfigSummary(),schema,
+    connected:authorization.state==="connected",...publicConfig(config),...protectedConfigSummary(config),schema,
     usageControlsEnabled:posture!=="demo",
     origin:{configured:origin.configured,currentMatchesCanonical:origin.currentMatchesCanonical},
     authorization:{state:authorization.state,lastVerifiedAt:authorization.lastVerifiedAt},

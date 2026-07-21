@@ -14,7 +14,7 @@ OpenX Growth connects to the official X API, analyzes the accounts you follow an
 - **Official APIs only:** no scraping or browser automation.
 - **Human-controlled publishing:** no automatic replies or unsolicited DMs.
 - **No telemetry:** the project sends data only to X and providers you configure.
-- **Fork-first secrets:** credentials live in deployment secrets, never in the browser or repository.
+- **Protected secrets:** the installation key lives in deployment secrets; operational keys entered in the same-origin Settings page are encrypted before D1 storage and are never returned to the browser.
 - **Honest state:** the UI labels sample data as `DEMO DATA` and connected results as `LIVE FROM X`.
 
 ## Features
@@ -53,11 +53,55 @@ OAuth and refresh tokens are AES-GCM encrypted using `SESSION_SECRET` before D1 
 ## Requirements
 
 - Node.js 22.13+
-- An X developer account and application
-- A Cloudflare Worker-compatible deployment with a D1 binding named `DB`
-- X API credits for the endpoints you use
+- A Cloudflare account (the guided installer creates the Worker and D1 database)
+- An X developer account when you are ready to connect X; you can create the X application after deployment
+- X API credits only when you start using live X endpoints
 
-## 1. Fork and install
+## First installation (recommended)
+
+Use this path for a normal first installation. After forking and cloning the repository, run:
+
+```bash
+npm ci
+npm run setup
+```
+
+If setup reports that GNU `timeout` is missing on macOS, install it once and retry:
+
+```bash
+brew install coreutils
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
+```
+
+### What to choose during setup
+
+1. **Cloudflare login:** approve the browser authorization and return to the terminal. Cloudflare hosts the app and its D1 database.
+2. **Deployment address:** press Enter to use the recommended `workers.dev` address. Choose `custom` only if you already own and configured a custom domain.
+3. **X Client ID:** paste it if your X application is ready, or press Enter to finish it later in **Settings → X account**.
+4. **X Client Secret:** leave it empty unless X explicitly gave your application a client secret.
+5. Wait for **Setup complete**. If setup stops, fix the reported problem and run `npm run setup` again; completed steps and existing data are preserved.
+
+The installer creates `wrangler.jsonc` and `.env.local`, creates or reuses D1, applies migrations, deploys the Worker, generates four independent application secrets, uploads missing secrets and runs a protected healthcheck. Secrets remain in the gitignored `.env.local` with mode `600`; existing remote secrets are never rotated automatically.
+
+> **Do not copy `.env.example`, generate secrets or run migrations manually when using `npm run setup`.** Those instructions belong only to the advanced recovery path below.
+
+### After “Setup complete”
+
+1. Open the application address printed by the installer.
+2. Sign in with the `APP_ACCESS_TOKEN` saved locally in `.env.local`, then store that token in your password manager. Never commit or share the file.
+3. Open **Settings → X account**. Paste the OAuth Client ID and the optional Client Secret, then save.
+4. Click **Continue with X**, approve the requested permissions and return to OpenX.
+5. Open **Discover** and run the first read-only sync. Create a draft before attempting any optional manual publish test.
+
+After installation, normal configuration happens in **Settings**. OpenRouter/OpenAI, AI approvals, evergreen behavior, cache duration, local limits and integration tokens do not require the Cloudflare dashboard or a redeploy. Only the deployment address and the root encryption secret remain installation-owned.
+
+Run `npm run setup -- --help` to see prerequisites and exactly what the wizard creates before starting.
+
+## Manual installation and recovery (advanced)
+
+Use the sections below only when you intentionally are not using the guided installer or need to repair one of its steps. If the wizard finished successfully, skip directly to [Run locally](#5-run-locally), [Scheduler](#6-scheduler), or the feature documentation you need.
+
+### 1. Fork and install
 
 Fork this repository, then:
 
@@ -79,7 +123,7 @@ openssl rand -base64 32  # APP_ACCESS_TOKEN (required before configuring X)
 
 Never reuse these values and never commit `.env.local`.
 
-## 2. Create the X application
+### 2. Create the X application
 
 1. Open the [X Developer Console](https://console.x.com/).
 2. Create a dedicated application for your OpenX fork.
@@ -101,26 +145,40 @@ OpenX requests only:
 tweet.read tweet.write users.read offline.access
 ```
 
-## 3. Configure environment variables
+### 3. Configure environment variables
 
-See [.env.example](.env.example). At minimum, production needs:
+See [.env.example](.env.example). The guided setup creates `.env.local`, detects `APP_URL`, generates the four independent application secrets, and uploads the bootstrap values to Cloudflare. After the first protected sign-in, operational configuration is managed from the application Settings page and stored encrypted in D1. Environment variables remain fallback defaults and a manual recovery path.
 
-```dotenv
-APP_URL=https://YOUR_DEPLOYMENT_HOST
-X_CLIENT_ID=your_oauth_2_client_id
-SESSION_SECRET=a_random_value_with_at_least_32_characters
-APP_ACCESS_TOKEN=a_distinct_random_access_token
-CRON_SECRET=
-OPENX_API_TOKEN=
-```
+| Variable | Required? | Who sets it | Purpose |
+| --- | --- | --- | --- |
+| `APP_URL` | Production | Wizard or operator | Canonical public origin with no trailing slash. It must match the X website URL and OAuth callback origin. |
+| `X_CLIENT_ID` | X connection | Settings or operator | OAuth 2.0 Client ID from the X Developer Console. Editable in **Settings → X account**. |
+| `X_CLIENT_SECRET` | Sometimes | Settings or operator | Only for a confidential X Web App client. Leave empty for a public PKCE client. Stored encrypted when entered in Settings. |
+| `SESSION_SECRET` | Configured instance | Wizard | Encrypts OAuth tokens stored in D1. Generated from 48 random bytes. |
+| `APP_ACCESS_TOKEN` | Configured instance | Wizard, then Settings | Protects browser access. Replaceable in **Settings → Security**; the existing value is never displayed. |
+| `CRON_SECRET` | Scheduler endpoint | Wizard, then Settings | Protects `POST /api/cron/publish`. Replaceable in **Settings → Publishing**. |
+| `OPENX_API_TOKEN` | REST, MCP and healthcheck | Wizard, then Settings | Separate bearer token for REST/MCP access. Replaceable in **Settings → Publishing**. |
+| `AI_BASE_URL` | Optional AI | Settings | OpenRouter, OpenAI, or a public HTTPS OpenAI-compatible provider URL. |
+| `AI_API_KEY` | Optional AI | Settings | Write-only provider credential stored encrypted in D1. AI remains disabled when empty. |
+| `AI_MODEL` | Optional AI | Settings | Provider model identifier. Defaults to `gpt-5-mini`. |
+| `X_AI_CONTENT_APPROVED` | Optional AI | Settings | Policy gate for AI-assisted content. Keep disabled until the approved X use case permits it. |
+| `X_AI_REPLIES_APPROVED` | Optional AI | Settings | Separate policy gate for AI-assisted replies. Keep disabled unless explicitly permitted. |
+| `ENABLE_EVERGREEN` | Optional | Settings | Enables repeated scheduled publishing. Defaults to `false`. |
+| `SYNC_TTL_SECONDS` | Optional | Settings | Cache lifetime for X intelligence syncs. Defaults to `900`. |
+| `MAX_DAILY_X_RESOURCES` | Optional | Settings → Limits | Local daily cap for successfully returned X data items. Defaults to `500`. |
+| `MAX_DAILY_X_WRITES` | Optional | Settings → Limits | Local daily cap for outbound post/reply attempts. Defaults to `50`. |
+| `MAX_DAILY_X_READS` | Legacy only | Existing deployments | Backward-compatible fallback. New installations should use `MAX_DAILY_X_RESOURCES`. |
+| `OPENX_BASE_URL` | MCP process only | Operator | URL used by `npm run mcp`. It is not a Worker variable; pass it in the MCP process environment. |
+
+The wizard establishes a protected installation. From then on use the clearly separated **Settings** sections: **X account**, **AI provider**, **Publishing**, **Limits**, **Security**, and **Data & privacy**. Settings overrides take effect without editing `wrangler.jsonc` or redeploying. Secret fields are write-only, encrypted with `SESSION_SECRET`, and excluded from Settings responses and exports. `SESSION_SECRET` itself remains an installation-only bootstrap secret because OpenX needs it before it can encrypt anything else; changing it makes existing ciphertext unreadable. `APP_URL` remains deployment-owned because it defines the public OAuth origin.
 
 `APP_ACCESS_TOKEN` may be empty only while the instance is an unconfigured, write-disabled public demo. As soon as `X_CLIENT_ID` and `SESSION_SECRET` configure the instance, a missing application token fails closed before any application data, OAuth flow, API token or scheduler token is accepted.
 
 Do not prefix secret variables with `NEXT_PUBLIC_`.
 
-## 4. Database
+### 4. Database
 
-Create a D1 database and bind it as `DB`. Apply the migrations in `drizzle/` using your hosting workflow. With Wrangler:
+Create a D1 database and bind it exactly as `DB` (uppercase). Values such as `openx_growth` are database names or custom bindings and will not work with the included `npm run db:migrate:*` scripts. Apply the migrations in `drizzle/` using your hosting workflow. With Wrangler:
 
 ```bash
 npx wrangler d1 migrations apply YOUR_DATABASE --local
@@ -148,7 +206,7 @@ Set production secrets with `wrangler secret put NAME`; do not place them in `wr
 npm run dev
 ```
 
-Open the local URL. The dashboard loads immediately in unconfigured, write-disabled demo mode. Before setting `X_CLIENT_ID` and `SESSION_SECRET`, also set `APP_ACCESS_TOKEN`; restart the dev server, log in, then use **Settings → Continue with X**.
+Open the local URL. The dashboard loads immediately in unconfigured, write-disabled demo mode. Before setting `X_CLIENT_ID` and `SESSION_SECRET`, also set `APP_ACCESS_TOKEN`; restart the dev server and log in. Then use **Settings → X account** to enter or change the X Client ID and continue with X.
 
 ## 6. Scheduler
 
@@ -168,7 +226,7 @@ Publishing uses expiring conditional leases. For threads, each confirmed X ident
 
 ## AI features and X approval
 
-AI generation is **off by default** and treated as a separate, opt-in use case. Confirm that your declared X use case, the current developer agreement and any approval applicable to your account permit it before setting either flag:
+AI generation is **off by default** and treated as a separate, opt-in use case. Configure it in **Settings → AI provider**. For OpenRouter, select OpenRouter, paste the key, enter the provider model ID, choose the approval toggles, and save; no Cloudflare dashboard change or redeploy is required. Confirm that your declared X use case, the current developer agreement and any approval applicable to your account permit it before enabling either approval:
 
 ```dotenv
 AI_API_KEY=your_provider_key
@@ -197,7 +255,7 @@ MAX_DAILY_X_WRITES=50
 
 Each outbound call increments the request count. Reads reserve their requested worst-case resource count atomically, then reconcile to successfully returned users/posts; failed calls and `429` responses consume zero resources. Every outbound post/reply attempt consumes one write unit regardless of provider status, and a retry is a separate request and write attempt. `MAX_DAILY_X_READS` remains a legacy fallback when the resource variable is unset.
 
-Tune these local limits below your paid plan. A manual forced sync bypasses cache but still counts against the budget. The X provider console spend limit remains the external hard backstop; local counters cannot replace it.
+Tune these local limits in **Settings → Limits** below your paid plan. A manual forced sync bypasses cache but still counts against the budget. The X provider console spend limit remains the external hard backstop; local counters cannot replace it.
 
 ## REST API
 

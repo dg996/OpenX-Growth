@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 process.env.SESSION_SECRET="test-only-session-secret-with-more-than-32-characters";
 
 test("sealed sessions do not expose plaintext",async()=>{
-  const {safeEqual,seal,unseal}=await import("../lib/security.ts");
+  const {hasBearerAuth,safeEqual,seal,unseal}=await import("../lib/security.ts");
   const value={accessToken:"private-access-token",refreshToken:"private-refresh-token",clientId:"client",expiresAt:123};
   const encrypted=await seal(value);
   assert.equal(encrypted.includes(value.accessToken),false);
@@ -14,6 +14,10 @@ test("sealed sessions do not expose plaintext",async()=>{
   assert.equal(await unseal("tampered.value"),null);
   assert.equal(await safeEqual("same-value","same-value"),true);
   assert.equal(await safeEqual("same-value","other-value"),false);
+  const request=(authorization:string)=>({headers:new Headers({authorization})});
+  assert.equal(await hasBearerAuth(request("Bearer same-value"),"same-value"),true);
+  assert.equal(await hasBearerAuth(request("Bearer other-value"),"same-value"),false);
+  assert.equal(await hasBearerAuth(request("Basic same-value"),"same-value"),false);
 });
 
 test("demo mode allows browsing without access token",async()=>{
@@ -106,6 +110,8 @@ test("release build disables local env files and privacy audit scans untracked w
   assert.match(build,/OPENX_DISABLE_ENV_FILES=1/);
   assert.match(build,/CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false/);
   assert.match(vite,/OPENX_DISABLE_ENV_FILES/);
+  assert.match(vite,/tests\/fixtures\/wrangler\.e2e\.jsonc/);
+  assert.match(vite,/existsSync\(new URL\("\.\/wrangler\.jsonc"[^\n]+\|\| e2eConfigPath/);
   assert.match(privacy,/--others/);
   assert.match(privacy,/--exclude-standard/);
 });
@@ -147,4 +153,28 @@ test("protected runtime configuration serializes labels and booleans without sec
     state:"ready",
   });
   for(const secret of [process.env.X_CLIENT_ID,process.env.X_CLIENT_SECRET,process.env.SESSION_SECRET,process.env.APP_ACCESS_TOKEN,process.env.AI_BASE_URL,process.env.AI_API_KEY])assert.ok(secret&&!serialized.includes(secret));
+});
+
+test("managed settings accept public providers and reject private or malformed endpoints",async()=>{
+  const {runtimeSettingsInputSchema}=await import("../lib/runtime-settings.ts");
+  const valid={section:"ai",baseUrl:"https://openrouter.ai/api/v1",model:"openai/gpt-5-mini",apiKey:"test-provider-key",contentApproved:false,repliesApproved:false};
+  assert.equal(runtimeSettingsInputSchema.safeParse(valid).success,true);
+  for(const baseUrl of ["http://openrouter.ai/api/v1","https://127.0.0.1/v1","https://10.0.0.8/v1","https://[::ffff:127.0.0.1]/v1","https://[::ffff:10.0.0.1]/v1","https://[::ffff:c0a8:1]/v1","https://[fc00::1]/v1","https://[fe80::1]/v1","https://[ff00::1]/v1","https://provider.local/v1","https://user:password@example.com/v1","https://example.com/v1?token=secret"]){
+    assert.equal(runtimeSettingsInputSchema.safeParse({...valid,baseUrl}).success,false,baseUrl);
+  }
+  assert.equal(runtimeSettingsInputSchema.safeParse({...valid,unexpected:"value"}).success,false);
+});
+
+test("settings API is browser-only, CSRF-protected, bounded, encrypted, and never returns secrets",()=>{
+  const route=readFileSync(new URL("../app/api/settings/route.ts",import.meta.url),"utf8");
+  const runtime=readFileSync(new URL("../lib/runtime-settings.ts",import.meta.url),"utf8");
+  assert.match(route,/authorizeSettingsRead/);
+  assert.match(route,/authorizeSettingsMutation/);
+  assert.match(route,/createAppAuthCookie/);
+  assert.match(route,/16_384/);
+  assert.doesNotMatch(route,/console\.(?:log|error|warn)/);
+  assert.match(runtime,/sealedValue=await seal\(parsed\)/);
+  assert.doesNotMatch(runtime,/apiKey:config\.aiApiKey/);
+  assert.doesNotMatch(runtime,/clientSecret:config\.xClientSecret/);
+  assert.doesNotMatch(runtime,/appAccessToken:config\.appAccessToken/);
 });

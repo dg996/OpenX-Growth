@@ -5,7 +5,7 @@ import { seal, unseal, type XSession } from "./security";
 
 const SESSION_KEY = "x-session";
 const HEALTH_KEY = "x-session-health";
-export type StoredAuthorizationHealth={state:"connected"|"reconnect_required";lastVerifiedAt:number;lastVerifiedAccountId?:string};
+export type StoredAuthorizationHealth={state:"connected"|"disconnected"|"reconnect_required";lastVerifiedAt:number;lastVerifiedAccountId?:string};
 export async function storeXSession(session:XSession) {
   const sealedValue = await seal(session);
   await getDb().insert(secureStore).values({key:SESSION_KEY,sealedValue,updatedAt:Date.now()}).onConflictDoUpdate({target:secureStore.key,set:{sealedValue,updatedAt:Date.now()}});
@@ -36,10 +36,16 @@ export async function markReconnectRequired() {
   await storeAuthorizationHealth({state:"reconnect_required",lastVerifiedAt:previous?.lastVerifiedAt??Date.now(),lastVerifiedAccountId:previous?.lastVerifiedAccountId});
 }
 
+export async function markAuthorizationDisconnected() {
+  const previous=await loadAuthorizationHealth();
+  await storeAuthorizationHealth({state:"disconnected",lastVerifiedAt:previous?.lastVerifiedAt??Date.now(),lastVerifiedAccountId:previous?.lastVerifiedAccountId});
+}
+
 export async function deleteAuthorizationHealth() { await getDb().delete(secureStore).where(eq(secureStore.key,HEALTH_KEY)); }
 
 export async function resolveStoredAuthorization(cookieSession:XSession|null,now=Date.now()) {
   const [health,storedSession]=await Promise.all([loadAuthorizationHealth(),loadXSession()]);
+  if(health?.state==="disconnected")return {state:"disconnected" as const,session:null,lastVerifiedAt:health.lastVerifiedAt,lastVerifiedAccountId:health.lastVerifiedAccountId};
   if(health?.state==="reconnect_required")return {state:"reconnect_required" as const,session:null,lastVerifiedAt:health.lastVerifiedAt,lastVerifiedAccountId:health.lastVerifiedAccountId};
   const session=storedSession??cookieSession;
   if(!session)return {state:"disconnected" as const,session:null,lastVerifiedAt:health?.lastVerifiedAt,lastVerifiedAccountId:health?.lastVerifiedAccountId};

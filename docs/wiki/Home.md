@@ -4,14 +4,18 @@ OpenX Growth is a self-hosted, open-source workspace to **discover ideas and rep
 
 This wiki is the operator handbook: how to run it live, connect X safely, and troubleshoot common issues.
 
-## Quick start (local demo)
+## First installation
 
-- Clone the repo
-- Install dependencies: `npm ci`
-- Copy env template: `cp .env.example .env.local`
-- Start: `npm run dev`
+For a normal Cloudflare installation, fork and clone the repository, then run:
 
-The app loads in **unconfigured, write-disabled demo mode**.
+```bash
+npm ci
+npm run setup
+```
+
+Approve the Cloudflare browser login and press Enter for the recommended `workers.dev` address. If your X application is not ready, press Enter when asked for X credentials; you can add them later in **Settings → X account**.
+
+Wait for **Setup complete**, open the printed application address and sign in with `APP_ACCESS_TOKEN` from the local `.env.local`. The wizard creates the database, migrations, deployment files and installation secrets. Do not repeat those steps manually.
 
 ## Go live (connect your X account)
 
@@ -24,25 +28,22 @@ The app loads in **unconfigured, write-disabled demo mode**.
 
 `https://YOUR_DOMAIN/api/x/oauth/callback`
 
-### 2) Set required server env vars
+### 2) Register the application addresses
 
-Before you configure X, you must protect the instance:
+Use the addresses displayed by OpenX:
 
-- `APP_ACCESS_TOKEN` (required once configured)
-- `SESSION_SECRET` (generate a strong secret)
-- `APP_URL` (your public origin)
-- `X_CLIENT_ID` (from X developer console)
-
-Optional (recommended in production):
-
-- `CRON_SECRET` (protects scheduled publish endpoint)
-- `OPENX_API_TOKEN` (protects REST/MCP write access)
-
-Restart the server after changing env vars.
+- Website URL: the exact OpenX application address
+- Callback URL: `https://YOUR_DOMAIN/api/x/oauth/callback`
 
 ### 3) Authorize via Settings
 
-Open **Settings → Continue with X** and complete the OAuth consent flow.
+Open **Settings → X account**, paste the OAuth Client ID and optional Client Secret, and save. Click **Continue with X**, approve the permissions, then run the first read-only sync from **Discover**.
+
+OpenRouter/OpenAI, evergreen behavior, cache duration, local limits and integration tokens are also changed from the application Settings page. They do not require the Cloudflare dashboard or a redeploy.
+
+## Local demo or manual recovery
+
+Copying `.env.example`, generating secrets and running database migrations manually are advanced paths for local development or recovery. They are not additional steps after a successful `npm run setup`. See the [README](../../README.md#manual-installation-and-recovery-advanced) and [deployment guide](../DEPLOYMENT.md#manual-installation-or-recovery-advanced).
 
 ## Daily limits and usage
 
@@ -75,4 +76,3 @@ Do not open public issues for vulnerabilities.
 Use GitHub’s private **Report a vulnerability** flow (requires “Private vulnerability reporting” enabled in repo settings).
 
 See `SECURITY.md`.
-

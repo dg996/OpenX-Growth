@@ -1,5 +1,9 @@
 import type { NextRequest, NextResponse } from "next/server";
-import { appConfig, deploymentPosture, instanceConfigured } from "./config.ts";
+import { deploymentPosture, instanceConfigured } from "./config.ts";
+import { getEffectiveConfig } from "./runtime-settings.ts";
+import { seal, unseal } from "./sealed.ts";
+
+export { seal, unseal } from "./sealed.ts";
 
 export const SESSION_COOKIE = "__Host-openx_session";
 export const OAUTH_COOKIE = "__Host-openx_oauth";
@@ -7,34 +11,11 @@ export const CSRF_COOKIE = "__Host-openx_csrf";
 export const AUTH_COOKIE = "__Host-openx_auth";
 
 export type XSession = { accessToken:string; refreshToken?:string; clientId:string; expiresAt:number };
+type AppAuthSession = { authorized:boolean; expiresAt:number; accessTokenBinding:string };
 
 export function cookieName(name:string,secure:boolean) { return secure ? name : name.replace(/^__Host-/,""); }
 export function readCookie(request:NextRequest,name:string) { return request.cookies.get(name)?.value ?? request.cookies.get(cookieName(name,false))?.value; }
-
-const encode = (bytes:Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
-const decode = (value:string) => Uint8Array.from(atob(value.replace(/-/g,"+").replace(/_/g,"/").padEnd(Math.ceil(value.length/4)*4,"=")),(char)=>char.charCodeAt(0));
-
-async function key() {
-  const secret = appConfig().sessionSecret;
-  if (secret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
-  const digest = await crypto.subtle.digest("SHA-256",new TextEncoder().encode(secret));
-  return crypto.subtle.importKey("raw",digest,{name:"AES-GCM"},false,["encrypt","decrypt"]);
-}
-
-export async function seal(value:unknown):Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt({name:"AES-GCM",iv},await key(),new TextEncoder().encode(JSON.stringify(value)));
-  return `${encode(iv)}.${encode(new Uint8Array(encrypted))}`;
-}
-
-export async function unseal<T>(value?:string):Promise<T | null> {
-  if (!value) return null;
-  try {
-    const [iv,data] = value.split(".");
-    const decrypted = await crypto.subtle.decrypt({name:"AES-GCM",iv:decode(iv)},await key(),decode(data));
-    return JSON.parse(new TextDecoder().decode(decrypted)) as T;
-  } catch { return null; }
-}
+const encode=(bytes:Uint8Array)=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
 
 export async function getXSession(request:NextRequest) { return unseal<XSession>(readCookie(request,SESSION_COOKIE)); }
 
@@ -56,54 +37,77 @@ export async function safeEqual(left:string,right:string) {
   return difference===0;
 }
 
+export async function hasBearerAuth(request:Pick<NextRequest,"headers">,expected:string|undefined) {
+  const match=/^Bearer ([^\s]+)$/.exec(request.headers.get("authorization")??"");
+  return Boolean(expected&&match&&await safeEqual(match[1],expected));
+}
+
+export async function appAccessBinding(appAccessToken:string) {
+  const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(`openx-app-access:${appAccessToken}`));
+  return encode(new Uint8Array(digest));
+}
+
+export async function createAppAuthCookie(appAccessToken:string,expiresAt=Date.now()+2_592_000_000) {
+  return seal({authorized:true,expiresAt,accessTokenBinding:await appAccessBinding(appAccessToken)} satisfies AppAuthSession);
+}
+
 export function requireCsrf(request:NextRequest) {
   const cookie = readCookie(request,CSRF_COOKIE);
   const header = request.headers.get("x-csrf-token");
   if (!cookie || !header || cookie !== header) throw new Error("CSRF_VALIDATION_FAILED");
 }
 
-export function hasApiAuth(request:NextRequest) {
-  const token = appConfig().apiToken;
-  return Boolean(token && request.headers.get("authorization") === `Bearer ${token}`);
+export async function hasApiAuth(request:NextRequest) {
+  const token=(await getEffectiveConfig()).apiToken;
+  return hasBearerAuth(request,token);
 }
 
-export function isAccessProtected() {
-  return Boolean(appConfig().appAccessToken);
+export async function isAccessProtected() {
+  return Boolean((await getEffectiveConfig()).appAccessToken);
 }
 
 export async function hasAppAccess(request:NextRequest) {
-  const posture=deploymentPosture();
+  const config=await getEffectiveConfig();
+  const posture=deploymentPosture(config);
   if(posture==="demo")return true;
   if(posture==="misconfigured")return false;
-  const auth = await unseal<{authorized:boolean;expiresAt:number}>(readCookie(request,AUTH_COOKIE));
-  return auth?.authorized === true&&Number.isFinite(auth.expiresAt)&&auth.expiresAt>Date.now();
+  if(!config.appAccessToken)return false;
+  const auth = await unseal<Partial<AppAuthSession>>(readCookie(request,AUTH_COOKIE));
+  const expiresAt=auth?.expiresAt;
+  const accessTokenBinding=auth?.accessTokenBinding;
+  return auth?.authorized===true
+    &&typeof expiresAt==="number"
+    &&Number.isFinite(expiresAt)
+    &&expiresAt>Date.now()
+    &&typeof accessTokenBinding==="string"
+    &&await safeEqual(accessTokenBinding,await appAccessBinding(config.appAccessToken));
 }
 
-function postureResponse() {
-  return deploymentPosture()==="misconfigured"
+async function postureResponse() {
+  return deploymentPosture(await getEffectiveConfig())==="misconfigured"
     ? Response.json({error:"APP_ACCESS_TOKEN_REQUIRED",message:"Configured instances must set APP_ACCESS_TOKEN before any application data is exposed."},{status:503,headers:{"Cache-Control":"no-store"}})
     : null;
 }
 
-export function configuredAccessGateResponse(){return postureResponse();}
+export async function configuredAccessGateResponse(){return postureResponse();}
 
 const unauthorizedResponse=()=>Response.json({error:"UNAUTHORIZED"},{status:401,headers:{"Cache-Control":"no-store"}});
 
 export async function authorizeBrowserRead(request:NextRequest) {
-  const blocked=postureResponse();
+  const blocked=await postureResponse();
   if(blocked)return blocked;
   return await hasAppAccess(request)?null:unauthorizedResponse();
 }
 
 export async function authorizeBrowserOrApiRead(request:NextRequest) {
-  const blocked=postureResponse();
+  const blocked=await postureResponse();
   if(blocked)return blocked;
-  if(hasApiAuth(request))return null;
+  if(await hasApiAuth(request))return null;
   return await hasAppAccess(request)?null:unauthorizedResponse();
 }
 
 export async function authorizeBrowserMutation(request:NextRequest) {
-  const unconfigured=configuredInstanceResponse();
+  const unconfigured=await configuredInstanceResponse();
   if(unconfigured)return unconfigured;
   const denied=await authorizeBrowserRead(request);
   if(denied)return denied;
@@ -111,15 +115,27 @@ export async function authorizeBrowserMutation(request:NextRequest) {
 }
 
 export async function authorizeBrowserOrApiMutation(request:NextRequest) {
-  const unconfigured=configuredInstanceResponse();
+  const unconfigured=await configuredInstanceResponse();
   if(unconfigured)return unconfigured;
   const denied=await authorizeBrowserOrApiRead(request);
   if(denied)return denied;
-  if(hasApiAuth(request))return null;
+  if(await hasApiAuth(request))return null;
   try{requireCsrf(request);return null;}catch{return Response.json({error:"INVALID_CSRF"},{status:403});}
 }
 
-export function configuredInstanceResponse() {
-  if (instanceConfigured()) return null;
+export async function configuredInstanceResponse() {
+  if(instanceConfigured(await getEffectiveConfig()))return null;
   return Response.json({error:"INSTANCE_NOT_CONFIGURED",message:"Configure X_CLIENT_ID and SESSION_SECRET in your environment to enable this action."},{status:503});
+}
+
+export async function authorizeSettingsMutation(request:NextRequest) {
+  const config=await getEffectiveConfig();
+  if(!config.appAccessToken)return Response.json({error:"APP_ACCESS_TOKEN_REQUIRED"},{status:503,headers:{"Cache-Control":"no-store"}});
+  const denied=await authorizeBrowserRead(request);if(denied)return denied;
+  try{requireCsrf(request);return null;}catch{return Response.json({error:"INVALID_CSRF"},{status:403,headers:{"Cache-Control":"no-store"}});}
+}
+
+export async function authorizeSettingsRead(request:NextRequest) {
+  if(!(await getEffectiveConfig()).appAccessToken)return Response.json({error:"APP_ACCESS_TOKEN_REQUIRED"},{status:503,headers:{"Cache-Control":"no-store"}});
+  return authorizeBrowserRead(request);
 }

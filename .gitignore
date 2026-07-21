@@ -46,3 +46,6 @@ next-env.d.ts
 # Deployment identity is instance-specific. Copy the tracked example locally.
 /.openai/hosting.json
 /wrangler.jsonc
+
+# Local planning notes, never committed.
+/PLAN.md

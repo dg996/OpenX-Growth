@@ -19,7 +19,6 @@ export const appConfig = () => ({
   cronSecret: env("CRON_SECRET"),
   apiToken: env("OPENX_API_TOKEN"),
   appAccessToken: env("APP_ACCESS_TOKEN"),
-  aiProvider: env("AI_PROVIDER","openai-compatible"),
   aiBaseUrl: env("AI_BASE_URL","https://api.openai.com/v1"),
   aiApiKey: env("AI_API_KEY"),
   aiModel: env("AI_MODEL","gpt-5-mini"),
@@ -32,8 +31,9 @@ export const appConfig = () => ({
   syncTtlSeconds: Number(env("SYNC_TTL_SECONDS","900")),
 });
 
-export function instanceConfigured() {
-  const config = appConfig();
+export type AppConfig=ReturnType<typeof appConfig>;
+
+export function instanceConfigured(config:AppConfig=appConfig()) {
   return Boolean(config.xClientId && config.sessionSecret);
 }
 
@@ -58,10 +58,9 @@ export type AiConfigurationSummary={
   state:"disabled"|"configured_not_approved"|"ready";
 };
 
-export function deploymentPosture():DeploymentPosture {
-  const config=appConfig();
+export function deploymentPosture(config:AppConfig=appConfig()):DeploymentPosture {
   if(config.appAccessToken)return "protected";
-  return instanceConfigured()?"misconfigured":"demo";
+  return instanceConfigured(config)?"misconfigured":"demo";
 }
 
 export function aiProviderLabel(baseUrl:string):AiConfigurationSummary["provider"] {
@@ -73,9 +72,8 @@ export function aiProviderLabel(baseUrl:string):AiConfigurationSummary["provider
   return "Custom OpenAI-compatible";
 }
 
-export function protectedConfigSummary():{xConfiguration?:XConfigurationSummary;aiConfiguration?:AiConfigurationSummary} {
-  if(deploymentPosture()!=="protected")return {};
-  const config=appConfig();
+export function protectedConfigSummary(config:AppConfig=appConfig()):{xConfiguration?:XConfigurationSummary;aiConfiguration?:AiConfigurationSummary} {
+  if(deploymentPosture(config)!=="protected")return {};
   return {
     xConfiguration:{
       xClientIdConfigured:Boolean(config.xClientId),
@@ -97,11 +95,10 @@ export function protectedConfigSummary():{xConfiguration?:XConfigurationSummary;
   };
 }
 
-export function publicConfig() {
-  const config = appConfig();
-  const posture=deploymentPosture();
+export function publicConfig(config:AppConfig=appConfig()) {
+  const posture=deploymentPosture(config);
   return {
-    configured:instanceConfigured(),
+    configured:instanceConfigured(config),
     demoMode:posture==="demo",
     accessProtected:posture==="protected",
     configurationError:posture==="misconfigured"?"APP_ACCESS_TOKEN_REQUIRED":null,

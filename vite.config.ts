@@ -23,9 +23,10 @@ const e2eBindingNames=[
 const e2eVars=process.env.OPENX_E2E==="1"
   ? Object.fromEntries(e2eBindingNames.map((name)=>[name,process.env[name]??""]))
   : undefined;
+const e2eConfigPath=process.env.OPENX_E2E==="1" ? "tests/fixtures/wrangler.e2e.jsonc" : undefined;
 
 const localBindingConfig = {
-  main: process.env.OPENX_E2E==="1" ? "./tests/fixtures/worker.e2e.ts" : "./worker/index.ts",
+  main: process.env.OPENX_E2E==="1" ? "./worker.e2e.ts" : "./worker/index.ts",
   ...(e2eVars?{vars:e2eVars}:{}),
   d1_databases: d1
     ? [
@@ -46,7 +47,7 @@ const localBindingConfig = {
     : [],
 };
 
-const localWorkerConfig = existsSync(new URL("./wrangler.jsonc", import.meta.url))
+const localWorkerConfig = existsSync(new URL("./wrangler.jsonc", import.meta.url)) || e2eConfigPath
   ? localBindingConfig
   : {
       ...localBindingConfig,
@@ -82,6 +83,7 @@ export default defineConfig(async () => {
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
+        ...(e2eConfigPath?{configPath:e2eConfigPath}:{}),
         ...(e2eStateDir?{persistState:{path:e2eStateDir}}:{}),
         config: localWorkerConfig,
       }),

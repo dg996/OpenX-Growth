@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { appConfig } from "../../../../lib/config";
+import { getEffectiveConfig } from "../../../../lib/runtime-settings";
 import { replyInputSchema, validationIssues } from "../../../../lib/post-validation";
 import { authorizeBrowserMutation, getXSession, setXSession } from "../../../../lib/security";
-import { loadXSession, storeXSession } from "../../../../lib/session-store";
+import { resolveStoredAuthorization, storeXSession } from "../../../../lib/session-store";
 import { refreshXAccessToken } from "../../../../lib/x-oauth";
 import { getXTransport } from "../../../../lib/x-transport";
 
@@ -13,12 +13,14 @@ function transportFailure(error:unknown) {
 
 export async function POST(request:NextRequest) {
   const denied=await authorizeBrowserMutation(request);if(denied)return denied;
-  let session = await getXSession(request) ?? await loadXSession();
-  if (!session) return NextResponse.json({error:"X_NOT_CONNECTED"},{status:401});
+  const authorization=await resolveStoredAuthorization(await getXSession(request));
+  if(authorization.state==="disconnected")return NextResponse.json({error:"X_NOT_CONNECTED"},{status:401});
+  if(authorization.state==="reconnect_required")return NextResponse.json({error:"X_RECONNECT_REQUIRED"},{status:401});
+  let session=authorization.session!;
   let raw:unknown;try{raw=await request.json();}catch{return NextResponse.json({error:"INVALID_JSON"},{status:400});}
   const parsed=replyInputSchema.safeParse(raw);if(!parsed.success)return NextResponse.json({error:"INVALID_REPLY",issues:validationIssues(parsed.error)},{status:400});
   const {postId,text,generated}=parsed.data;
-  if (generated && !appConfig().xAiRepliesApproved) return NextResponse.json({error:"AI_REPLY_APPROVAL_REQUIRED"},{status:403});
+  if(generated&&!(await getEffectiveConfig()).xAiRepliesApproved)return NextResponse.json({error:"AI_REPLY_APPROVAL_REQUIRED"},{status:403});
   const transport=getXTransport();
   const body={text:text.trim(),reply:{in_reply_to_tweet_id:postId}};
   let xResponse;

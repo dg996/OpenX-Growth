@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { appConfig } from "../../../../../lib/config";
+import { getEffectiveConfig } from "../../../../../lib/runtime-settings";
 import { authorizeBrowserRead, cookieName, OAUTH_COOKIE, randomToken, seal } from "../../../../../lib/security";
 import { canonicalOriginStatus } from "../../../../../lib/canonical-origin";
 import { getSchemaHealth } from "../../../../../lib/schema-health";
@@ -10,7 +10,7 @@ export async function GET(request:NextRequest) {
   const denied=await authorizeBrowserRead(request);if(denied)return denied;
   const schema=await getSchemaHealth();
   if(schema.state!=="ready")return NextResponse.redirect(new URL("/?x_error=database_setup",request.url));
-  const config = appConfig();
+  const config=await getEffectiveConfig();
   if (!config.xClientId || !config.sessionSecret) return NextResponse.redirect(new URL("/?x_error=not_configured",request.url));
   const originStatus=canonicalOriginStatus(config.appUrl,request.nextUrl.origin);
   if(!originStatus.valid||!originStatus.currentMatchesCanonical)return NextResponse.redirect(new URL("/?x_error=origin_mismatch",request.url));

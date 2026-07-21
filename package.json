@@ -17,6 +17,7 @@
   },
   "scripts": {
     "install:ci": "bash scripts/install-ci.sh",
+    "setup": "node scripts/cli/init.mjs",
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",

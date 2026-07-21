@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "../../../../db";
 import { analyticsSnapshots, feedback, posts } from "../../../../db/schema";
 import { deploymentPosture } from "../../../../lib/config";
+import { getEffectiveConfig } from "../../../../lib/runtime-settings";
 import { authorizeBrowserOrApiRead } from "../../../../lib/security";
 
 export async function GET(request:NextRequest){
   const denied=await authorizeBrowserOrApiRead(request);if(denied)return denied;
-  if(deploymentPosture()==="demo")return new NextResponse(JSON.stringify({schemaVersion:1,exportedAt:new Date().toISOString(),posts:[],feedback:[],analytics:[]},null,2),{headers:{"Content-Type":"application/json","Content-Disposition":`attachment; filename="openx-growth-export-${new Date().toISOString().slice(0,10)}.json"`,"Cache-Control":"no-store"}});
+  if(deploymentPosture(await getEffectiveConfig())==="demo")return new NextResponse(JSON.stringify({schemaVersion:1,exportedAt:new Date().toISOString(),posts:[],feedback:[],analytics:[]},null,2),{headers:{"Content-Type":"application/json","Content-Disposition":`attachment; filename="openx-growth-export-${new Date().toISOString().slice(0,10)}.json"`,"Cache-Control":"no-store"}});
   const [postRows,feedbackRows,analyticsRows]=await Promise.all([
     getDb().select().from(posts),
     getDb().select().from(feedback),

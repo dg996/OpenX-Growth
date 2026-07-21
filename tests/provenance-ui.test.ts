@@ -6,7 +6,7 @@ const page=readFileSync(new URL("../app/page.tsx",import.meta.url),"utf8");
 const growth=readFileSync(new URL("../lib/x-growth.ts",import.meta.url),"utf8");
 
 test("live analytics and follower charts are data-driven with explicit sparse states", () => {
-  const analyticsView=page.slice(page.indexOf("function AnalyticsView"),page.indexOf("function SettingsView"));
+  const analyticsView=page.slice(page.indexOf("function AnalyticsView"),page.indexOf("function SettingsToggle"));
   assert.match(analyticsView,/DataSeriesChart label="Impressions from X snapshots"/);
   assert.match(page,/DataSeriesChart label="Follower snapshots"/);
   assert.match(page,/Insufficient data/);
@@ -43,28 +43,26 @@ test("sync failures remain visible without hiding stored content and analytics",
 
 test("the local safety cap is visibly distinct from paid X Developer Credits", () => {
   const overview=page.slice(page.indexOf('{view === "Overview"'),page.indexOf('{view === "Discover"'));
-  const credits=page.slice(page.indexOf("function CreditsLimitsView"),page.indexOf("function AnalyticsView"));
+  const credits=page.slice(page.indexOf("function LimitsSettings"),page.indexOf("function AnalyticsView"));
   assert.match(page,/OpenX daily safety limit reached/);
   assert.match(page,/separate from your paid X Developer Credits/);
   assert.match(page,/Sync paused — local limit reached/);
   assert.match(page,/No additional X API request will be sent while paused/);
   assert.match(page,/resets automatically every day/);
-  assert.match(page,/Credits & limits/);
   assert.match(credits,/Reset today&apos;s OpenX counters/);
   assert.match(credits,/Save limits/);
-  assert.match(credits,/X Developer Credits/);
-  assert.match(credits,/AI provider/);
-  assert.match(credits,/Balance not imported/);
+  assert.match(credits,/do not change your paid balance with X or your AI provider/);
+  assert.match(page,/Not your X Credits balance/);
   assert.doesNotMatch(overview,/Reset today|resetLocalUsage/);
   assert.match(page,/OpenX daily safety cap/);
   assert.doesNotMatch(page,/label:"X resources"/);
 });
 
-test("credit and limit messages lead to the dedicated management page",()=>{
+test("credit and limit messages lead directly to the Settings limits section",()=>{
   assert.match(page,/onCredits:\(\)=>void/);
-  assert.match(page,/Open Credits &amp; limits/);
-  assert.match(page,/Review limits and credits/);
-  assert.match(page,/changeView\("Credits & limits"\)/);
+  assert.match(page,/Open Settings → Limits/);
+  assert.match(page,/openSettings\("limits"\)/);
+  assert.doesNotMatch(page,/changeView\("Credits & limits"\)/);
 });
 
 test("stored analytics and cache enter UI state without an automatic live sync", () => {
@@ -80,25 +78,19 @@ test("explicit sync errors are surfaced and sync completion uses lastSync", () =
   assert.match(page,/postXSync\(csrf,crypto\.randomUUID\(\)\)/);
   assert.match(page,/setSyncError\(sanitizeSyncError/);
   assert.match(page,/onRetry=\{\(\)=>void syncFromX\(\)\}/);
-  assert.match(page,/synced=\{Boolean\(lastSync\)\}/);
-  assert.match(page,/className=\{synced\?"done":""\}>Discover → Sync from X/);
+  assert.match(page,/setLastSync\(payload\.syncedAt\)/);
+  assert.match(page,/lastSync=\{lastSync\}/);
 });
 
-test("Settings separates authoritative runtime state from a collapsed setup reference", () => {
-  const settings=page.slice(page.indexOf("function SettingsView"),page.indexOf("function ConfigurationLine"));
-  const currentSummary=settings.slice(0,settings.indexOf("setup-reference-toggle"));
-  const setupReference=settings.slice(settings.indexOf("setup-reference-toggle"));
-  assert.match(settings,/CURRENT CONFIGURATION/);
-  assert.match(settings,/Provider/);
-  assert.match(settings,/Model/);
-  assert.match(settings,/API key/);
-  assert.match(settings,/Content approval/);
-  assert.match(settings,/Reply approval/);
-  assert.match(settings,/aria-expanded=\{setupReferenceOpen\}/);
-  assert.match(settings,/ADVANCED SETUP REFERENCE/);
-  assert.match(page,/Schema: \{required \? "required" : "optional"\}/);
-  assert.doesNotMatch(currentSummary,/AI_MODEL=gpt-4o-mini|AI_BASE_URL=https:\/\/api\.openai\.com/);
-  assert.match(setupReference,/AI_MODEL=gpt-4o-mini/);
+test("Settings is divided into editable operational sections with write-only secrets", () => {
+  const settings=page.slice(page.indexOf("function SettingsPage"));
+  for(const section of ["X account","AI provider","Publishing","Limits","Security","Data & privacy"])assert.match(settings,new RegExp(`label:"${section.replace("&","&")}"`));
+  assert.match(settings,/Add OpenRouter without Cloudflare/);
+  assert.match(settings,/Get an OpenRouter key/);
+  assert.match(settings,/Saved securely — leave blank to keep/);
+  assert.match(settings,/The existing value is never returned to the browser/);
+  assert.match(settings,/selected==="limits"/);
+  assert.doesNotMatch(settings,/ADVANCED SETUP REFERENCE/);
 });
 
 test("overview growth plan uses loaded discovery data and user-initiated AI only", () => {
@@ -134,4 +126,10 @@ test("Composer AI controls guard duplicate requests and guide empty-source click
   assert.match(composer,/\{aiReady&&<div className="ai-tools">/);
   assert.match(page,/aiReady=\{aiReady\}/);
   assert.match(page,/const aiReady=isAiContentReady\(runtimeConfig\)/);
+});
+
+test("Composer omits the evergreen interval when evergreen is disabled", () => {
+  const composer=page.slice(page.indexOf("function Composer"),page.indexOf("function ReplyComposer"));
+  assert.match(composer,/\.\.\.\(evergreen\?\{evergreenIntervalDays:interval\}:\{\}\)/);
+  assert.doesNotMatch(composer,/evergreen,evergreenIntervalDays:interval/);
 });

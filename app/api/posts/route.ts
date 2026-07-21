@@ -3,12 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "../../../db";
 import { posts } from "../../../db/schema";
 import { deploymentPosture } from "../../../lib/config";
+import { getEffectiveConfig } from "../../../lib/runtime-settings";
 import { createPostInputSchema, validationIssues } from "../../../lib/post-validation";
 import { authorizeBrowserOrApiMutation, authorizeBrowserOrApiRead } from "../../../lib/security";
 
 export async function GET(request:NextRequest) {
   const denied=await authorizeBrowserOrApiRead(request);if(denied)return denied;
-  if(deploymentPosture()==="demo")return NextResponse.json({posts:[]});
+  if(deploymentPosture(await getEffectiveConfig())==="demo")return NextResponse.json({posts:[]});
   const rows=await getDb().select().from(posts).orderBy(desc(posts.createdAt)).limit(200);
   return NextResponse.json({posts:rows.map(({claimToken,...post})=>{void claimToken;return post;})});
 }

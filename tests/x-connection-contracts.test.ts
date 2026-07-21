@@ -35,6 +35,14 @@ test("render and cache reads cannot invoke explicit X or AI operations",()=>{
   assert.doesNotMatch(getHandler,/getXTransport|refreshXAccessToken|writeCache|reserveXUsage/);
 });
 
+test("limits live inside Settings and are not duplicated in the primary sidebar",()=>{
+  const page=readFileSync(new URL("../app/page.tsx",import.meta.url),"utf8");
+  assert.doesNotMatch(page,/"Credits & limits" as View/);
+  assert.match(page,/\{id:"limits",label:"Limits"/);
+  assert.match(page,/selected==="limits"/);
+  assert.match(page,/openSettings\("limits"\)/);
+});
+
 test("explicit sync is mutation-authorized, idempotent, leased, and preflighted before transport",()=>{
   const source=readFileSync(new URL("../app/api/x/sync/route.ts",import.meta.url),"utf8");
   assert.match(source,/authorizeBrowserOrApiMutation/);
@@ -45,8 +53,12 @@ test("explicit sync is mutation-authorized, idempotent, leased, and preflighted 
 
 test("local usage controls are CSRF-protected, leased, and make no provider call",()=>{
   const source=readFileSync(new URL("../app/api/x/status/route.ts",import.meta.url),"utf8");
+  const getHandler=source.slice(source.indexOf("export async function GET"),source.indexOf("export async function POST"));
   const handler=source.slice(source.indexOf("export async function POST"));
+  assert.match(getHandler,/authorizeBrowserOrApiRead/);
+  assert.doesNotMatch(getHandler,/authorizeBrowserRead/);
   assert.match(handler,/authorizeBrowserMutation/);
+  assert.doesNotMatch(handler,/authorizeBrowserOrApiMutation/);
   assert.match(handler,/claimSyncLease/);
   assert.match(handler,/resetDailyXUsage/);
   assert.match(handler,/setXUsageLimits/);

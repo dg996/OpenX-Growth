@@ -35,13 +35,14 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { buildChartCoordinates } from "../lib/chart";
 import { buildGrowthPlan, buildGrowthPlanDraftSeed } from "../lib/growth-plan";
 import { aiErrorGuidance, decideOnboarding, growthPlanEmptyGuidance, hasAiRewriteSource, hasLivePlanningData, isAiContentReady, isWorkspaceBlocking, ONBOARDING_STORAGE_KEY, resolveWorkspaceState, sanitizeSyncError, syncErrorGuidance, type WorkspaceState } from "../lib/ui-state";
 import type { IdeaSignal, ReplyOpportunity } from "../lib/x-growth";
 
-type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Credits & limits" | "Settings";
+type View = "Overview" | "Discover" | "Content" | "Schedule" | "Analytics" | "Settings";
+type SettingsSection = "x" | "ai" | "publishing" | "limits" | "security" | "data";
 type PostStatus = "Draft" | "Scheduled" | "Publishing" | "Published" | "Failed" | "Needs review";
 
 type ContentItem = {
@@ -55,7 +56,7 @@ type ContentItem = {
   lastError?: string;
 };
 
-type SavePostInput = {text:string;thread:string[];scheduledAt?:number;evergreen:boolean;evergreenIntervalDays:number;generated:boolean;topic?:string;hook?:string};
+type SavePostInput = {text:string;thread:string[];scheduledAt?:number;evergreen:boolean;evergreenIntervalDays?:number;generated:boolean;topic?:string;hook?:string};
 type XConfigurationSummary={xClientIdConfigured:boolean;xClientSecretConfigured:boolean;sessionSecretConfigured:boolean;appUrlConfigured:boolean;appAccessTokenConfigured:boolean;cronSecretConfigured:boolean;apiTokenConfigured:boolean};
 type AiConfigurationSummary={provider:"OpenRouter"|"OpenAI"|"Custom OpenAI-compatible";model:string;apiKeyConfigured:boolean;contentApproved:boolean;repliesApproved:boolean;state?:"disabled"|"configured_not_approved"|"ready"};
 type AuthorizationState="disconnected"|"connected"|"authorization_check_required"|"reconnect_required"|"oauth_in_progress"|"oauth_failed";
@@ -89,6 +90,12 @@ type AiPayload={content?:string|string[];rationale?:string;generated?:boolean;er
 type AiRequest={kind:"idea"|"post"|"thread"|"reply"|"rewrite";prompt:string;context?:string};
 type ComposerSeed={parts:string[];topic?:string;generated:boolean};
 type AiRewriteAction="Stronger hook"|"Shorten"|"Match my voice";
+type RuntimeSettingsData={
+  x:{clientId:string;clientSecretConfigured:boolean};
+  ai:{provider:"OpenRouter"|"OpenAI"|"Custom OpenAI-compatible";baseUrl:string;model:string;apiKeyConfigured:boolean;contentApproved:boolean;repliesApproved:boolean};
+  publishing:{evergreenEnabled:boolean;syncTtlSeconds:number;cronSecretConfigured:boolean;apiTokenConfigured:boolean};
+  access:{appAccessTokenConfigured:boolean;sessionSecretConfigured:boolean};
+};
 
 const postStatusLabel=(status:string):PostStatus=>status==="needs_review"?"Needs review":`${status.charAt(0).toUpperCase()}${status.slice(1)}` as PostStatus;
 const localResetLabel=(value?:string)=>{
@@ -129,7 +136,6 @@ const navItems = [
   { label: "Content" as View, icon: FileText },
   { label: "Schedule" as View, icon: CalendarDays },
   { label: "Analytics" as View, icon: BarChart3 },
-  { label: "Credits & limits" as View, icon: CreditCard },
 ];
 
 const signals: IdeaSignal[] = [
@@ -203,7 +209,7 @@ function Composer({ onClose, onSave, onOpenSettings, seed, csrf, evergreenEnable
   const updatePart=(index:number,value:string)=>setParts((current)=>current.map((part,position)=>position===index?value:part));
   const close=()=>{aiController.current?.abort();onClose()};
   const improve=async(action:AiRewriteAction,prompt:string)=>{if(!aiReady||aiInFlight.current)return;const context=parts.join("\n---\n");if(!context.trim()){setAiError("AI_SOURCE_REQUIRED");return}const controller=new AbortController();aiInFlight.current=true;aiController.current=controller;setActiveAi(action);setError("");setAiError("");try{const payload=await requestAiGeneration(csrf,{kind:parts.length>1?"thread":"rewrite",prompt,context},controller.signal);const content=payload.content;setParts(Array.isArray(content)?content:[content]);setGenerated(true)}catch(failure){if(!controller.signal.aborted)setAiError(failure instanceof Error?failure.message:"")}finally{if(aiController.current===controller)aiController.current=null;aiInFlight.current=false;setActiveAi(null)}};
-  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(saving||aiInFlight.current||!clean.length||clean.some((part)=>part.length>280))return;setSaving(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,evergreenIntervalDays:interval,generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setSaving(false);if(ok){setDone(true);setTimeout(close,650)}else setError("Could not save this post.")};
+  const submit=async()=>{const clean=parts.map((part)=>part.trim()).filter(Boolean);if(saving||aiInFlight.current||!clean.length||clean.some((part)=>part.length>280))return;setSaving(true);setError("");const ok=await onSave({text:clean[0],thread:clean,scheduledAt:scheduled&&scheduledAt?new Date(scheduledAt).getTime():undefined,evergreen,...(evergreen?{evergreenIntervalDays:interval}:{}),generated,topic:seed.topic,hook:clean[0].split("\n")[0]});setSaving(false);if(ok){setDone(true);setTimeout(close,650)}else setError("Could not save this post.")};
   const guidance=aiError?aiErrorGuidance(aiError):null;
   return (
     <div className="modal-backdrop" onMouseDown={close}>
@@ -237,7 +243,7 @@ function ReplyComposer({ opportunity, live, onClose, csrf, aiRepliesApproved, on
 }
 
 const X_DEV_CONSOLE = "https://console.x.com/";
-const X_OAUTH_DOCS = "https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code";
+const OPENROUTER_KEYS = "https://openrouter.ai/keys";
 
 function CopyField({ label, hint, value }: { label: string; hint?: string; value: string }) {
   return (
@@ -252,32 +258,10 @@ function CopyField({ label, hint, value }: { label: string; hint?: string; value
   );
 }
 
-function EnvVarRow({ name, required, description, example }: { name: string; required?: boolean; description: string; example?: string }) {
-  return (
-    <div className="env-var-row">
-      <div className="env-var-head">
-        <code>{name}</code>
-        <b className="schema">Schema: {required ? "required" : "optional"}</b>
-      </div>
-      <p>{description}</p>
-      {example && <div className="copy-code example-code"><small>EXAMPLE</small><code>{example}</code></div>}
-    </div>
-  );
-}
-
-function GuideStep({ n, title, children }: { n: number; title: string; children: ReactNode }) {
-  return (
-    <section className="settings-guide-block">
-      <header><span className="eyebrow">STEP {n}</span><h3>{title}</h3></header>
-      {children}
-    </section>
-  );
-}
-
 const apiSetupSteps = [
-  { label: "Fork and configure", icon: Github },
+  { label: "Install OpenX", icon: Github },
   { label: "Create an X app", icon: Code2 },
-  { label: "Set environment", icon: Settings },
+  { label: "Register app URLs", icon: Settings },
   { label: "Authorize X", icon: Link2 },
 ];
 
@@ -293,16 +277,16 @@ function SetupGuide({ onClose, onGoToSettings, onGoToCredits }: { onClose: () =>
     <section className="setup-guide" aria-modal="true" role="dialog" aria-label="Connect X API setup guide">
       <aside className="setup-progress">
         <div className="brand"><Logo/><span>OpenX Growth</span></div>
-        <div><span className="eyebrow">QUICK START</span><h2>Connect your X API</h2><p>About 5 minutes. You keep control of your credentials and API usage.</p></div>
+        <div><span className="eyebrow">QUICK START</span><h2>Finish your setup</h2><p>One guided installation, then connect your own X application.</p></div>
         <ol>{apiSetupSteps.map(({label,icon:Icon}, index) => <li key={label} className={index === step ? "current" : index < step ? "complete" : ""}><i>{index < step ? <Check size={13}/> : <Icon size={13}/>}</i><span><small>STEP {index+1}</small>{label}</span></li>)}</ol>
-        <div className="byok-note"><Github size={16}/><div><strong>Why bring your own key?</strong><p>The app stays free and open source. X bills API usage directly to your developer account.</p><button className="text-btn" onClick={onGoToCredits}>Understand credits and local limits</button></div></div>
+        <div className="byok-note"><Github size={16}/><div><strong>Why your own X app?</strong><p>You control authorization, API usage and billing in your X developer account.</p><button className="text-btn" onClick={onGoToCredits}>Understand credits and local limits</button></div></div>
       </aside>
       <div className="setup-content">
         <header><span className="step-count">{step+1} / {apiSetupSteps.length}</span><button className="icon-btn" onClick={onClose} aria-label="Close setup"><X size={18}/></button></header>
-        {step === 0 && <div className="setup-step"><div className="step-icon"><Github size={23}/></div><span className="eyebrow">SELF-HOSTED FIRST</span><h1>Fork and install</h1><p className="lead">Each installation owns its code, database, X usage and secrets. No shared OpenX service receives your credentials.</p><div className="instruction-list"><div><b>1</b><p><strong>Fork the repository</strong><span>Keep your fork private until environment variables are configured.</span></p></div><div><b>2</b><p><strong>Install dependencies</strong><span><code>npm ci</code> then copy <code>.env.example</code> to <code>.env.local</code> (local) or set secrets on your host.</span></p></div><div><b>3</b><p><strong>Generate secrets</strong><span><code>openssl rand -base64 48</code> for SESSION_SECRET and a separate APP_ACCESS_TOKEN. Only an unconfigured, write-disabled demo may omit the access token.</span></p></div><div><b>4</b><p><strong>Migrate the database</strong><span><code>npm run db:migrate:local</code> for dev, <code>db:migrate:remote</code> after creating D1 in production.</span></p></div></div><a className="external-action" href="https://github.com/dg996/OpenX-Growth/fork" target="_blank" rel="noreferrer">Fork on GitHub <ArrowUpRight size={15}/></a></div>}
-        {step === 1 && <div className="setup-step"><div className="step-icon"><Code2 size={23}/></div><span className="eyebrow">X DEVELOPER CONSOLE</span><h1>Create your X application</h1><p className="lead">You never paste an X access token manually. OpenX uses OAuth 2.0 + PKCE and stores encrypted tokens after you approve in the browser.</p><div className="instruction-list"><div><b>1</b><p><strong>Open the X Developer Console</strong><span>Create a project and a dedicated app named e.g. “OpenX Growth”.</span></p></div><div><b>2</b><p><strong>Enable OAuth 2.0</strong><span>Under User authentication settings, turn on OAuth 2.0.</span></p></div><div><b>3</b><p><strong>App type: Web App / Single Page App</strong><span>Public clients use PKCE and usually do not need X_CLIENT_SECRET.</span></p></div><div><b>4</b><p><strong>Set permissions to Read and Write</strong><span>Required for sync, publishing and replies.</span></p></div><div><b>5</b><p><strong>Copy the OAuth 2.0 Client ID</strong><span>Paste it into <code>X_CLIENT_ID</code> in your server environment — never in the browser.</span></p></div></div><a className="external-action" href={X_DEV_CONSOLE} target="_blank" rel="noreferrer">Open X Developer Console <ArrowUpRight size={15}/></a><div className="security-note"><Settings size={16}/><p><strong>Dedicated app recommended.</strong><span>Isolates permissions, billing and revocation from your other X integrations.</span></p></div></div>}
-        {step === 2 && <div className="setup-step"><div className="step-icon"><Settings size={23}/></div><span className="eyebrow">ENVIRONMENT</span><h1>Register URLs and set secrets</h1><p className="lead">Add these values to <code>.env.local</code> (dev) or your host&apos;s secret manager (production). Restart the server after changes.</p><div className="config-grid"><label className="wide">Website URL<strong>{origin}</strong><small>Set the same value as <code>APP_URL</code> in your environment.</small></label><label className="wide">Callback / Redirect URI<div className="copy-code"><code>{callback}</code><button onClick={()=>void navigator.clipboard.writeText(callback)} aria-label="Copy callback URL"><Link2 size={14}/></button></div><small>Paste this exact URL into the X app OAuth settings. Must match character-for-character.</small></label></div><div className="credential-map"><div><span>ENV VAR</span><strong>X_CLIENT_ID</strong><Link2 size={14}/><span>FROM X</span><strong>OAuth 2.0 Client ID</strong></div><div><span>ENV VAR</span><strong>SESSION_SECRET</strong><Zap size={14}/><span>GENERATE</span><strong>openssl rand -base64 48</strong></div><div><span>ENV VAR</span><strong>APP_URL</strong><Link2 size={14}/><span>YOUR HOST</span><strong>{origin}</strong></div><div><span>ENV VAR</span><strong>CRON_SECRET</strong><Zap size={14}/><span>GENERATE</span><strong>openssl rand -base64 32</strong></div></div><div className="scope-box"><strong>OAuth scopes OpenX requests</strong><div><code>tweet.read</code><code>tweet.write</code><code>users.read</code><code>offline.access</code></div><p><code>offline.access</code> provides a refresh token so sync and publishing keep working without re-login.</p></div></div>}
-        {step === 3 && <div className="setup-step"><div className="step-icon"><Link2 size={23}/></div><span className="eyebrow">AUTHORIZE</span><h1>Connect your X account</h1><p className="lead">After env vars are set and the server restarted, open Settings and click <strong>Continue with X</strong>. You will be redirected to X, review permissions, then returned here automatically.</p><div className="instruction-list"><div><b>1</b><p><strong>Click Continue with X</strong><span>Starts OAuth at <code>/api/x/oauth/start</code> with PKCE.</span></p></div><div><b>2</b><p><strong>Approve on X</strong><span>X redirects to <code>{callback}</code> with a one-time authorization code.</span></p></div><div><b>3</b><p><strong>Tokens stored encrypted</strong><span>Access and refresh tokens are AES-GCM sealed with SESSION_SECRET in your D1 database.</span></p></div><div><b>4</b><p><strong>Go to Discover → Sync from X</strong><span>Live ideas, reply opportunities and analytics replace demo data.</span></p></div></div><div className="security-note"><Zap size={16}/><p><strong>No manual token entry.</strong><span>You do not paste bearer tokens into OpenX. Disconnect in Settings revokes the stored session.</span></p></div><button className="primary-btn finish-setup" onClick={finish}>Open Settings <ArrowUpRight size={15}/></button></div>}
+        {step === 0 && <div className="setup-step"><div className="step-icon"><Github size={23}/></div><span className="eyebrow">GUIDED INSTALLATION</span><h1>Run one installer</h1><p className="lead">The terminal wizard creates the Cloudflare app, database, migrations and installation secrets for you. Do not repeat those steps manually.</p><div className="instruction-list"><div><b>1</b><p><strong>Fork and clone OpenX</strong><span>Keep your fork private while the installation is being configured.</span></p></div><div><b>2</b><p><strong>Run the two commands</strong><span><code>npm ci</code>, then <code>npm run setup</code>.</span></p></div><div><b>3</b><p><strong>Accept the simple defaults</strong><span>Approve the Cloudflare browser login and press Enter for the recommended workers.dev address. You can defer X credentials until Settings.</span></p></div><div><b>4</b><p><strong>Wait for “Setup complete”</strong><span>Open the printed address and sign in with APP_ACCESS_TOKEN from your local .env.local. If you are already viewing your deployed OpenX app, continue to the next step.</span></p></div></div><div className="security-note"><Check size={16}/><p><strong>The installer does the technical work.</strong><span>Do not copy .env.example, generate secrets or run migrations separately unless you are following the advanced recovery guide.</span></p></div><a className="external-action" href="https://github.com/dg996/OpenX-Growth#first-installation-recommended" target="_blank" rel="noreferrer">Read the installation guide <ArrowUpRight size={15}/></a></div>}
+        {step === 1 && <div className="setup-step"><div className="step-icon"><Code2 size={23}/></div><span className="eyebrow">X DEVELOPER CONSOLE</span><h1>Create your X application</h1><p className="lead">You never paste an X access token manually. OpenX uses OAuth 2.0 + PKCE and stores encrypted tokens after you approve in the browser.</p><div className="instruction-list"><div><b>1</b><p><strong>Open the X Developer Console</strong><span>Create a project and a dedicated app named e.g. “OpenX Growth”.</span></p></div><div><b>2</b><p><strong>Enable OAuth 2.0</strong><span>Under User authentication settings, turn on OAuth 2.0.</span></p></div><div><b>3</b><p><strong>App type: Web App / Single Page App</strong><span>Public clients use PKCE and usually do not need a client secret.</span></p></div><div><b>4</b><p><strong>Set permissions to Read and Write</strong><span>Required for sync, publishing and replies.</span></p></div><div><b>5</b><p><strong>Copy the OAuth 2.0 Client ID</strong><span>Paste it into <strong>Settings → X account</strong>. If X gives you a Client Secret, paste that there too.</span></p></div></div><a className="external-action" href={X_DEV_CONSOLE} target="_blank" rel="noreferrer">Open X Developer Console <ArrowUpRight size={15}/></a><div className="security-note"><Settings size={16}/><p><strong>Dedicated app recommended.</strong><span>Isolates permissions, billing and revocation from your other X integrations.</span></p></div></div>}
+        {step === 2 && <div className="setup-step"><div className="step-icon"><Settings size={23}/></div><span className="eyebrow">APPLICATION URLS</span><h1>Register these two addresses</h1><p className="lead">The guided terminal setup already creates the installation secrets. Here you only copy the public addresses into your X application.</p><div className="config-grid"><label className="wide">Website URL<strong>{origin}</strong><small>Use this as the Website URL in the X Developer Console.</small></label><label className="wide">Callback / Redirect URI<div className="copy-code"><code>{callback}</code><button onClick={()=>void navigator.clipboard.writeText(callback)} aria-label="Copy callback URL"><Link2 size={14}/></button></div><small>Paste this exact URL into the X app OAuth settings. It must match character-for-character.</small></label></div><div className="security-note"><Settings size={16}/><p><strong>Everything else is in Settings.</strong><span>X credentials, OpenRouter or OpenAI, publishing options, limits and integration keys are managed from the application.</span></p></div><div className="scope-box"><strong>OAuth scopes OpenX requests</strong><div><code>tweet.read</code><code>tweet.write</code><code>users.read</code><code>offline.access</code></div><p><code>offline.access</code> provides a refresh token so sync and publishing keep working without re-login.</p></div></div>}
+        {step === 3 && <div className="setup-step"><div className="step-icon"><Link2 size={23}/></div><span className="eyebrow">AUTHORIZE</span><h1>Connect your X account</h1><p className="lead">Open <strong>Settings → X account</strong>, paste the Client ID, save, then click <strong>Continue with X</strong>. You will review permissions on X and return here automatically.</p><div className="instruction-list"><div><b>1</b><p><strong>Save the X application</strong><span>Enter the OAuth Client ID and optional Client Secret directly in Settings.</span></p></div><div><b>2</b><p><strong>Click Continue with X</strong><span>Starts OAuth with PKCE and redirects you to X.</span></p></div><div><b>3</b><p><strong>Approve on X</strong><span>X returns a one-time authorization code to <code>{callback}</code>.</span></p></div><div><b>4</b><p><strong>Go to Discover → Sync from X</strong><span>Live ideas, reply opportunities and analytics replace demo data.</span></p></div></div><div className="security-note"><Zap size={16}/><p><strong>No manual access-token entry.</strong><span>OAuth tokens are encrypted and never shown. Disconnect in Settings deletes the stored authorization.</span></p></div><button className="primary-btn finish-setup" onClick={finish}>Open Settings <ArrowUpRight size={15}/></button></div>}
         <footer><button className="ghost-btn" onClick={onClose}>I&apos;ll do this later</button><div><button className="outline-btn" disabled={step === 0} onClick={() => setStep((value) => Math.max(0,value-1))}>Back</button>{step < apiSetupSteps.length-1 && <button className="primary-btn" onClick={() => setStep((value) => value+1)}>Continue <ArrowUpRight size={14}/></button>}</div></footer>
       </div>
     </section>
@@ -322,7 +306,7 @@ function WorkspaceSyncNotice({state,error,onRetry,onSettings,onDiscover,onCredit
   if(state==="connected-syncing"||state==="live-refreshing")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>{state==="live-refreshing"?"Refreshing X data":"First X sync in progress"}</strong><span>{state==="live-refreshing"?"Existing verified data stays available while the read-only refresh runs.":"Local features stay available while OpenX loads the first verified snapshots."}</span></div></section>;
   if(state==="connected-insufficient")return <section className="workspace-sync-notice" role="status"><CircleGauge size={17}/><div><strong>No verified X data yet</strong><span>Open Discover when you are ready to run a read-only sync. Drafts and schedules remain available.</span></div><button className="outline-btn" onClick={onDiscover}>Open Discover</button></section>;
   const guidance=syncErrorGuidance(error);
-  return <section className="workspace-sync-notice error" role="alert"><CircleGauge size={17}/><div><strong>{guidance.title}</strong><span>{guidance.body}</span></div>{guidance.retryable&&<button className="outline-btn" onClick={onRetry}>Retry sync</button>}{guidance.manageLimits?<button className="outline-btn" onClick={onCredits}>Open Credits &amp; limits</button>:<button className="outline-btn" onClick={onSettings}>Open Settings</button>}</section>;
+  return <section className="workspace-sync-notice error" role="alert"><CircleGauge size={17}/><div><strong>{guidance.title}</strong><span>{guidance.body}</span></div>{guidance.retryable&&<button className="outline-btn" onClick={onRetry}>Retry sync</button>}{guidance.manageLimits?<button className="outline-btn" onClick={onCredits}>Open Settings → Limits</button>:<button className="outline-btn" onClick={onSettings}>Open Settings</button>}</section>;
 }
 
 function SchemaRecovery({code}:{code:string}) {
@@ -348,7 +332,7 @@ function XStatusSurface({status,syncing,notice,error,compact=false,onSync,onReco
   return <section className={`panel x-status-surface ${compact?"compact":"detailed"}`} role="status" aria-labelledby="x-status-heading">
     <div className="x-status-copy"><span className="eyebrow">X CONNECTION AND SYNC</span><h2 id="x-status-heading" tabIndex={-1}>{title}</h2><p>{body}</p>{notice&&<div className="x-status-alert" role="alert">{notice}</div>}{error&&<div className="x-status-alert" role="alert">{syncErrorGuidance(error).body}</div>}</div>
     <dl className="x-status-facts"><div><dt>Authorization</dt><dd>{authorization.replaceAll("_"," ")}</dd></div><div><dt>Last successful sync</dt><dd>{sync?.lastSuccessfulAt?new Date(sync.lastSuccessfulAt).toLocaleString():"Never"}</dd></div><div><dt>Data</dt><dd>{sync?.freshness==="cached_stale"?"Cached, may be stale":sync?.cacheAvailable?readiness?.overall==="sufficient"?"Cached":"Limited":"Unavailable"}</dd></div>{usage&&<div><dt>OpenX daily safety cap</dt><dd>{usage.usedResources} of {usage.maxResources} returned data items used · {usage.availableResources} available <button className="inline-link" onClick={onCredits}>Manage</button></dd></div>}{sync&&<div><dt>{busy?"Active sync":budgetBlocked?"Why sync is paused":"Next sync"}</dt><dd>{budgetBlocked?`A complete sync needs at least 11 available data items; ${usage?.availableResources??0} remain.`:`Up to ${busy?(sync.activeMaxReadResources??sync.next.maxReadResources):sync.next.maxReadResources} returned data items · ${busy?(sync.activeMaxRequests??sync.next.maxRequests):sync.next.maxRequests} X API requests · 0 writes`}</dd></div>}</dl>
-    <div className="x-status-actions">{originMismatch?<button className="outline-btn" onClick={onSettings}>Review APP_URL setup</button>:authorization==="reconnect_required"?<button className="primary-btn" onClick={onReconnect} disabled={busy}>Reconnect X</button>:authorization==="disconnected"?<a className={`primary-btn ${!status.configured?"disabled":""}`} href={status.configured?"/api/x/oauth/start":"#"}><Link2 size={15}/> Continue with X</a>:<button className="primary-btn" onClick={onSync} disabled={!canSync} aria-describedby={budgetBlocked?"x-budget-explanation":undefined}>{budgetBlocked?"Sync paused — local limit reached":busy?"Syncing…":authorization==="authorization_check_required"?"Check and sync":sync?.cacheAvailable?"Sync again":"Sync X data"}</button>}{budgetBlocked&&<div className="x-budget-explanation" id="x-budget-explanation"><strong>Not your X Credits balance</strong><span>No additional X API request will be sent while paused. OpenX&apos;s local counter resets automatically every day. Next reset: {resetLabel}.</span><button className="text-btn" onClick={onCredits}>Review limits and credits</button></div>}</div>
+    <div className="x-status-actions">{originMismatch?<button className="outline-btn" onClick={onSettings}>Review application address</button>:authorization==="reconnect_required"?<button className="primary-btn" onClick={onReconnect} disabled={busy}>Reconnect X</button>:authorization==="disconnected"?<a className={`primary-btn ${!status.configured?"disabled":""}`} href={status.configured?"/api/x/oauth/start":"#"}><Link2 size={15}/> Continue with X</a>:<button className="primary-btn" onClick={onSync} disabled={!canSync} aria-describedby={budgetBlocked?"x-budget-explanation":undefined}>{budgetBlocked?"Sync paused — local limit reached":busy?"Syncing…":authorization==="authorization_check_required"?"Check and sync":sync?.cacheAvailable?"Sync again":"Sync X data"}</button>}{budgetBlocked&&<div className="x-budget-explanation" id="x-budget-explanation"><strong>Not your X Credits balance</strong><span>No additional X API request will be sent while paused. OpenX&apos;s local counter resets automatically every day. Next reset: {resetLabel}.</span><button className="text-btn" onClick={onCredits}>Open Settings → Limits</button></div>}</div>
     {busy&&<div className="x-sync-progress" role="status">OpenX sets aside up to {sync?.activeMaxReadResources??sync?.next.maxReadResources??0} reads while this sync runs. Unused capacity becomes available again when it finishes.</div>}
   </section>;
 }
@@ -412,6 +396,7 @@ function TodaysGrowthPlan({ideas,opportunities,source,aiReady,csrf,onCreate,onRe
 
 export default function HomePage() {
   const [view, setView] = useState<View>("Overview");
+  const [settingsSection,setSettingsSection]=useState<SettingsSection>("x");
   const [range, setRange] = useState("28D");
   const [search, setSearch] = useState("");
   const [composerSeed, setComposerSeed] = useState<ComposerSeed|null>(null);
@@ -522,6 +507,7 @@ export default function HomePage() {
   const filteredOpportunities = useMemo(() => opportunityData.filter((item) => `${item.name} ${item.post}`.toLowerCase().includes(search.toLowerCase())), [search,opportunityData]);
 
   const changeView = (next: View) => { setView(next); setSearch(""); };
+  const openSettings=(section:SettingsSection="x")=>{setSettingsSection(section);changeView("Settings")};
   const dataSource:"demo"|"live"=runtimeConfig.demoMode?"demo":"live";
   const aiReady=isAiContentReady(runtimeConfig);
   const hasLiveData=hasLivePlanningData({hasAccountProfile:Boolean(account),ideaCount:signalData.length,replyOpportunityCount:opportunityData.length,analyticsStatus:analytics?.dataStatus});
@@ -581,18 +567,16 @@ export default function HomePage() {
 
         <div className="page-content">
           {schemaError?<SchemaRecovery code={schemaError}/>:loadError?<section className="panel full-panel workspace-state" role="alert"><CircleGauge size={28}/><h2>OpenX could not load this workspace</h2><p>Retry local loading. No X or AI service was contacted.</p><button className="outline-btn" onClick={()=>window.location.reload()}>Retry local loading</button></section>:view==="Settings"
-            ? <SettingsView connected={connected} synced={Boolean(lastSync)} config={runtimeConfig} csrf={csrf} syncing={syncBusy} syncError={syncError} onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onCredits={()=>changeView("Credits & limits")} onDisconnected={()=>{setConnected(false);setAccount(undefined);setOpportunityData([]);setSignalData([]);setAnalytics(undefined);setLastSync(undefined);setSyncError("");void refreshRuntimeStatus()}} onOpenGuide={() => setSetupGuide(true)}/>
-            : view==="Credits & limits"
-              ? <CreditsLimitsView key={`${runtimeConfig.usage?.maxResources??0}:${runtimeConfig.usage?.maxSyncResources??0}:${runtimeConfig.usage?.maxWrites??0}`} config={runtimeConfig} syncing={syncBusy} onSave={saveUsageLimits} onReset={resetLocalUsage}/>
+            ? <SettingsPage selected={settingsSection} onSelect={setSettingsSection} connected={connected} config={runtimeConfig} csrf={csrf} syncing={syncBusy} onSaveLimits={saveUsageLimits} onResetLimits={resetLocalUsage} onRuntimeRefresh={()=>void refreshRuntimeStatus()} onDisconnected={()=>{setConnected(false);setAccount(undefined);setOpportunityData([]);setSignalData([]);setAnalytics(undefined);setLastSync(undefined);setSyncError("");void refreshRuntimeStatus()}} onOpenGuide={() => setSetupGuide(true)}/>
             : isWorkspaceBlocking(workspaceState)
               ? <WorkspaceStatePanel state={workspaceState} onSettings={()=>changeView("Settings")}/>
               : <>
-          <XStatusSurface status={runtimeConfig} syncing={syncBusy} notice={oauthNotice} error={syncError} compact onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onSettings={()=>changeView("Settings")} onCredits={()=>changeView("Credits & limits")}/>
-          <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX()} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")} onCredits={()=>changeView("Credits & limits")}/>
+          <XStatusSurface status={runtimeConfig} syncing={syncBusy} notice={oauthNotice} error={syncError} compact onSync={()=>void syncFromX()} onReconnect={()=>void reconnectX()} onSettings={()=>openSettings("x")} onCredits={()=>openSettings("limits")}/>
+          <WorkspaceSyncNotice state={workspaceState} error={syncError} onRetry={()=>void syncFromX()} onSettings={()=>openSettings("x")} onDiscover={()=>changeView("Discover")} onCredits={()=>openSettings("limits")}/>
           {view === "Overview" && <>
             <TodaysGrowthPlan ideas={signalData} opportunities={opportunityData} source={dataSource} aiReady={aiReady} csrf={csrf} onCreate={openComposer} onReply={setSelectedReply} onSettings={()=>changeView("Settings")} onDiscover={()=>changeView("Discover")}/>
             {liveMetrics.length?<section className="metrics-row">
-              {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => label==="OpenX daily safety cap"?<button className="metric-card metric-card-link" key={label} onClick={()=>changeView("Credits & limits")}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></button>:<article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
+              {liveMetrics.map(({ label, value, delta, icon: Icon,provenance }) => label==="OpenX daily safety cap"?<button className="metric-card metric-card-link" key={label} onClick={()=>openSettings("limits")}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></button>:<article className="metric-card" key={label}><div><span>{label}</span><strong>{value}</strong><small><ArrowUpRight size={12}/>{delta}<em>{provenance?<ProvenanceText provenance={provenance}/>:"demo data"}</em></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}
             </section>:<section className="panel full-panel empty-analytics"><BarChart3 size={28}/><h2>Insufficient analytics data</h2><p>No verified X snapshots are available in the selected range yet.</p></section>}
 
             <section className="overview-grid">
@@ -620,7 +604,7 @@ export default function HomePage() {
           </>}
 
           {view === "Discover" && (
-            <DiscoverView signals={filteredSignals} opportunities={filteredOpportunities} source={dataSource} syncing={syncBusy} syncEnabled={Boolean(runtimeConfig.sync?.next.enabled)} error={syncError} lastSync={lastSync} onSync={()=>void syncFromX()} onConnect={() => changeView("Settings")} onCredits={()=>changeView("Credits & limits")} onReply={setSelectedReply} onCreate={(signal) => {void sendFeedback("idea",signal.topic,1,signal);openComposer({parts:[signal.hook],topic:signal.topic,generated:false})}} onFeedback={(signal,vote)=>void sendFeedback("idea",signal.topic,vote,signal)}/>
+            <DiscoverView signals={filteredSignals} opportunities={filteredOpportunities} source={dataSource} syncing={syncBusy} syncEnabled={Boolean(runtimeConfig.sync?.next.enabled)} error={syncError} lastSync={lastSync} onSync={()=>void syncFromX()} onConnect={() => openSettings("x")} onCredits={()=>openSettings("limits")} onReply={setSelectedReply} onCreate={(signal) => {void sendFeedback("idea",signal.topic,1,signal);openComposer({parts:[signal.hook],topic:signal.topic,generated:false})}} onFeedback={(signal,vote)=>void sendFeedback("idea",signal.topic,vote,signal)}/>
           )}
           {view === "Content" && <section className="panel full-panel"><ContentTable items={visibleContent} filter={contentFilter} onFilter={setContentFilter} onCreate={() => openComposer()} onPublish={publishPost}/></section>}
           {view === "Schedule" && <ScheduleView items={content.filter((item) => item.status === "Scheduled")} onCreate={() => openComposer()} postingTimes={dataSource==="live"?analytics?.postingTimes:undefined}/>}
@@ -638,7 +622,7 @@ export default function HomePage() {
         onSave={savePost}
       />}
       {selectedReply && <ReplyComposer opportunity={selectedReply} live={dataSource === "live"} csrf={csrf} aiRepliesApproved={runtimeConfig.aiRepliesApproved} onFeedback={(vote)=>void sendFeedback("reply",selectedReply.id,vote,selectedReply)} onClose={() => setSelectedReply(undefined)}/>}
-      {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); changeView("Settings"); }} onGoToCredits={()=>{setSetupGuide(false);changeView("Credits & limits")}}/>}
+      {setupGuide && <SetupGuide onClose={dismissOnboarding} onGoToSettings={() => { setSetupGuide(false); openSettings("x"); }} onGoToCredits={()=>{setSetupGuide(false);openSettings("limits")}}/>}
     </main>
   );
 }
@@ -660,7 +644,7 @@ function OpportunityList({ items, onView, onReply, source }: { items: ReplyOppor
 function DiscoverView({ signals: rows, opportunities: ops, onCreate, onReply, onSync, onConnect, onCredits, onFeedback, source, syncing, syncEnabled, error, lastSync }: { signals: IdeaSignal[]; opportunities: ReplyOpportunity[]; onCreate: (signal:IdeaSignal) => void; onReply:(item:ReplyOpportunity)=>void; onSync:()=>void; onConnect:()=>void; onCredits:()=>void; onFeedback:(signal:IdeaSignal,vote:number)=>void; source:"demo"|"live"; syncing:boolean; syncEnabled:boolean; error:string; lastSync?:string }) {
   const disabled=syncing||!syncEnabled;
   const guidance=error?syncErrorGuidance(error):null;
-  return <div className="discover-layout"><section className="source-banner"><div><DataBadge source={source}/><p>{source === "live" ? `Ideas and replies are ranked from your real X feed${lastSync ? ` · synced ${new Date(lastSync).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}` : ""}.` : "These are examples. Connect X to derive ideas and reply opportunities from accounts you actually follow."}</p>{source==="live"&&!syncEnabled&&<small>OpenX&apos;s local safety cap cannot cover another complete sync. This is separate from X Credits. <button className="inline-link" onClick={onCredits}>Open Credits &amp; limits</button></small>}</div>{source === "live" ? <button className="outline-btn" onClick={onSync} disabled={disabled}><CircleGauge size={14}/>{syncing ? "Syncing…" : "Sync X data"}</button> : <button className="primary-btn" onClick={onConnect}><Link2 size={14}/> Connect X</button>}</section>{guidance && <div className="sync-error" role="alert"><span>{guidance.body}</span>{guidance.manageLimits&&<button className="text-btn" onClick={onCredits}>Open Credits &amp; limits</button>}</div>}<section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">IDEAS FROM YOUR NETWORK</span><h2>What is gaining momentum</h2><p>Topics found in your home timeline and compared with your recent posts.</p></div><button className="outline-btn" onClick={source === "live" ? onSync : onConnect} disabled={source==="live"&&disabled}><CircleGauge size={14}/> {source === "live" ? syncing?"Syncing…":"Sync X data" : "Connect for live ideas"}</button></div><div className="signal-cards">{rows.map((signal, index) => <article key={signal.topic}><div className="signal-rank">0{index+1}</div><Flame size={18}/><div><h3>{signal.topic} <small>{signal.pillar}</small></h3><p>{signal.rationale || signal.change}{signal.algorithmVersion?` · ${signal.algorithmVersion}`:""}</p></div><div className="idea-vote"><button onClick={()=>onFeedback(signal,1)}>👍</button><button onClick={()=>onFeedback(signal,-1)}>👎</button></div><div className="signal-score"><strong>{signal.score}</strong><span><ProvenanceText provenance={signal.scoreProvenance}/></span></div><button className="outline-btn" onClick={() => onCreate(signal)}><Lightbulb size={14}/> Use idea</button></article>)}</div></section><section className="panel full-panel"><OpportunityList items={ops} source={source} onReply={onReply} onView={() => {}}/></section></div>;
+  return <div className="discover-layout"><section className="source-banner"><div><DataBadge source={source}/><p>{source === "live" ? `Ideas and replies are ranked from your real X feed${lastSync ? ` · synced ${new Date(lastSync).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}` : ""}.` : "These are examples. Connect X to derive ideas and reply opportunities from accounts you actually follow."}</p>{source==="live"&&!syncEnabled&&<small>OpenX&apos;s local safety cap cannot cover another complete sync. This is separate from X Credits. <button className="inline-link" onClick={onCredits}>Open Settings → Limits</button></small>}</div>{source === "live" ? <button className="outline-btn" onClick={onSync} disabled={disabled}><CircleGauge size={14}/>{syncing ? "Syncing…" : "Sync X data"}</button> : <button className="primary-btn" onClick={onConnect}><Link2 size={14}/> Connect X</button>}</section>{guidance && <div className="sync-error" role="alert"><span>{guidance.body}</span>{guidance.manageLimits&&<button className="text-btn" onClick={onCredits}>Open Settings → Limits</button>}</div>}<section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">IDEAS FROM YOUR NETWORK</span><h2>What is gaining momentum</h2><p>Topics found in your home timeline and compared with your recent posts.</p></div><button className="outline-btn" onClick={source === "live" ? onSync : onConnect} disabled={source==="live"&&disabled}><CircleGauge size={14}/> {source === "live" ? syncing?"Syncing…":"Sync X data" : "Connect for live ideas"}</button></div><div className="signal-cards">{rows.map((signal, index) => <article key={signal.topic}><div className="signal-rank">0{index+1}</div><Flame size={18}/><div><h3>{signal.topic} <small>{signal.pillar}</small></h3><p>{signal.rationale || signal.change}{signal.algorithmVersion?` · ${signal.algorithmVersion}`:""}</p></div><div className="idea-vote"><button onClick={()=>onFeedback(signal,1)}>👍</button><button onClick={()=>onFeedback(signal,-1)}>👎</button></div><div className="signal-score"><strong>{signal.score}</strong><span><ProvenanceText provenance={signal.scoreProvenance}/></span></div><button className="outline-btn" onClick={() => onCreate(signal)}><Lightbulb size={14}/> Use idea</button></article>)}</div></section><section className="panel full-panel"><OpportunityList items={ops} source={source} onReply={onReply} onView={() => {}}/></section></div>;
 }
 
 function ScheduleView({ items, onCreate,postingTimes }: { items: ContentItem[]; onCreate: () => void;postingTimes?:AnalyticsData["postingTimes"] }) {
@@ -671,7 +655,7 @@ function ScheduleView({ items, onCreate,postingTimes }: { items: ContentItem[]; 
 
 type UsageControlResult={ok:boolean;message:string};
 
-function CreditsLimitsView({config,syncing,onSave,onReset}:{config:AppRuntimeConfig;syncing:boolean;onSave:(limits:{maxResources:number;maxSyncResources:number;maxWrites:number})=>Promise<UsageControlResult>;onReset:()=>Promise<UsageControlResult>}) {
+function LimitsSettings({config,syncing,onSave,onReset}:{config:AppRuntimeConfig;syncing:boolean;onSave:(limits:{maxResources:number;maxSyncResources:number;maxWrites:number})=>Promise<UsageControlResult>;onReset:()=>Promise<UsageControlResult>}) {
   const usage=config.usage;
   const [daily,setDaily]=useState(String(usage?.maxResources??500));
   const [perSync,setPerSync]=useState(String(usage?.maxSyncResources??11));
@@ -691,9 +675,9 @@ function CreditsLimitsView({config,syncing,onSave,onReset}:{config:AppRuntimeCon
   const reset=async()=>{setBusy("reset");setMessage(null);setMessage(await onReset());setBusy(null)};
   const resourcePercent=usage?.maxResources?Math.min(100,Math.round(100*usage.usedResources/usage.maxResources)):0;
   const writePercent=usage?.maxWrites?Math.min(100,Math.round(100*usage.usedWrites/usage.maxWrites)):0;
-  return <div className="credits-layout">
-    <section className="panel credits-hero">
-      <div><span className="eyebrow">ONE PLACE FOR USAGE CONTROLS</span><h2>Local limits are not paid credits</h2><p>OpenX counters are safety controls stored by this installation. They do not read, spend, reset, or change your paid balance with X or your AI provider.</p></div>
+  return <div className="credits-layout settings-limits">
+    <section className="settings-intro">
+      <div><span className="eyebrow">LOCAL SAFETY LIMITS</span><h2>Choose how much OpenX can use</h2><p>These caps belong to this OpenX installation. They do not change your paid balance with X or your AI provider.</p></div>
       <div className="credits-reset-summary"><span>Next automatic reset</span><strong>{localResetLabel(usage?.resetsAt)}</strong><small>Daily OpenX counters use the UTC day.</small></div>
     </section>
 
@@ -704,7 +688,7 @@ function CreditsLimitsView({config,syncing,onSave,onReset}:{config:AppRuntimeCon
     </section>
 
     <div className="credits-main-grid">
-      <section className="panel limits-editor" aria-labelledby="limits-editor-heading">
+      <section className="settings-subcard limits-editor" aria-labelledby="limits-editor-heading">
         <span className="eyebrow">USER-DEFINED SAFETY CAPS</span><h2 id="limits-editor-heading">Choose how much OpenX may count</h2><p>These values control OpenX preflight checks. A sync is stopped before contacting X when the remaining local allowance cannot cover it.</p>
         <div className="limits-form">
           <label>Daily returned data items<input type="number" min="11" max="10000" step="1" value={daily} onChange={(event)=>setDaily(event.target.value)} disabled={!controlsEnabled}/><small>11–10,000. Resets automatically each UTC day.</small></label>
@@ -714,7 +698,7 @@ function CreditsLimitsView({config,syncing,onSave,onReset}:{config:AppRuntimeCon
         <div className="limits-actions"><button className="primary-btn" onClick={()=>void save()} disabled={!controlsEnabled}>{busy==="save"?"Saving…":"Save limits"}</button><span>Deployment defaults: {usage?.deploymentMaxResources??"—"} data items · {usage?.deploymentMaxWrites??"—"} writes. {usage?.userConfigured?"Your override is active.":"No user override yet."}</span></div>
       </section>
 
-      <section className="panel reset-panel" aria-labelledby="reset-limits-heading">
+      <section className="settings-subcard reset-panel" aria-labelledby="reset-limits-heading">
         <RotateCcw size={20}/><span className="eyebrow">TESTING AND RECOVERY</span><h2 id="reset-limits-heading">Reset today&apos;s OpenX counters</h2><p>This clears today&apos;s returned-data and write-attempt counters only. It does not change your saved caps, cached content, X authorization, X Developer Credits, or AI credits.</p><button className="outline-btn" onClick={()=>void reset()} disabled={!controlsEnabled}>{busy==="reset"?"Resetting…":"Reset today's counters"}</button>
         {syncing&&<small>A sync is running. Controls unlock when it finishes.</small>}
       </section>
@@ -722,12 +706,6 @@ function CreditsLimitsView({config,syncing,onSave,onReset}:{config:AppRuntimeCon
 
     {message&&<div className={`usage-control-message ${message.ok?"success":"error"}`} role={message.ok?"status":"alert"}>{message.message}</div>}
 
-    <section className="credits-provider-grid" aria-label="External provider credits">
-      <article className="panel provider-credit-card"><div><CreditCard size={18}/><span>EXTERNAL PROVIDER</span></div><h2>X Developer Credits</h2><strong>Balance not imported</strong><p>X owns pricing, billing, and your paid balance. OpenX only shows its own local counters above.</p><a className="outline-btn" href={X_DEV_CONSOLE} target="_blank" rel="noreferrer">Open X Developer Console <ArrowUpRight size={14}/></a></article>
-      <article className="panel provider-credit-card"><div><Sparkles size={18}/><span>EXTERNAL PROVIDER</span></div><h2>{config.aiConfiguration?.provider??"AI provider"} credits</h2><strong>Balance not imported</strong><p>AI generation uses the configured provider only after you request it. Provider balance and billing remain in that provider&apos;s dashboard.</p><button className="outline-btn" disabled>Managed outside OpenX</button></article>
-    </section>
-
-    <section className="panel credits-explainer"><span className="eyebrow">HOW THE NUMBERS WORK</span><div><h2>Daily cap</h2><p>Maximum returned data items and write attempts OpenX will count in one UTC day.</p></div><div><h2>Per-sync cap</h2><p>Maximum data items one explicit sync may count, so one sync does not have to consume the whole daily allowance.</p></div><div><h2>Provider credits</h2><p>Money or balance managed by X or your AI provider. OpenX does not infer a balance from local request counts.</p></div></section>
   </div>;
 }
 
@@ -738,143 +716,179 @@ function AnalyticsView({ range, setRange, data }: { range: string; setRange: (v:
   return <div className="analytics-layout"><section className="metrics-row">{cards.map(({label,metric,suffix="",icon:Icon})=><article className="metric-card" key={label}><div><span>{label}</span><strong>{metric.value.toLocaleString(undefined,{maximumFractionDigits:2})}{suffix}</strong><small><Check size={12}/><ProvenanceText provenance={metric.provenance}/></small></div><div className="metric-icon"><Icon size={18}/></div></article>)}</section><section className="panel full-panel"><div className="panel-header"><div><span className="eyebrow">DERIVED SERIES</span><h2>Impressions over time</h2><p><ProvenanceText provenance={data.derived.totals.impressions.provenance}/></p></div><div className="range-tabs">{["7D","28D","90D","1Y"].map((item)=><button className={range===item?"selected":""} key={item} onClick={()=>setRange(item)}>{item}</button>)}</div></div><div className="large-chart"><DataSeriesChart label="Impressions from X snapshots" points={data.derived.series.map((point)=>({recordedAt:point.recordedAt,value:point.impressions.value}))}/></div></section><div className="analytics-grid">{breakdown("Performance by topic",data.derived.byTopic)}{breakdown("Performance by format",data.derived.byFormat)}{breakdown("Best hooks",data.derived.byHook)}{breakdown("Posting-hour performance",data.derived.byHour)}</div></div>;
 }
 
-function SettingsView({ connected, synced, config, csrf, syncing, syncError, onSync, onReconnect, onCredits, onDisconnected, onOpenGuide }: { connected:boolean;synced:boolean;config:AppRuntimeConfig;csrf:string;syncing:boolean;syncError:string;onSync:()=>void;onReconnect:()=>void;onCredits:()=>void;onDisconnected:()=>void;onOpenGuide:()=>void }) {
-  const [message,setMessage]=useState("");
-  const [setupReferenceOpen,setSetupReferenceOpen]=useState(false);
-  const [origin] = useState(() => (typeof window === "undefined" ? "https://your-domain.com" : window.location.origin));
-  const callback = `${origin}/api/x/oauth/callback`;
-  const cronExample = `curl -X POST "${origin}/api/cron/publish" -H "Authorization: Bearer $CRON_SECRET"`;
-  const disconnect=async()=>{if(!window.confirm("Delete saved X authorization and the temporary ideas/replies cache? Drafts, schedules, analytics snapshots, and local usage settings remain."))return;const response=await fetch("/api/x/disconnect",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify({intent:"disconnect"})});if(response.ok){onDisconnected();setMessage("X authorization and the temporary ideas/replies cache were deleted. Durable local data remains.")}};
-  const deleteAll=async()=>{if(!window.confirm("Delete every local draft, schedule, metric, feedback item, cached X post and OAuth token? This cannot be undone."))return;const response=await fetch("/api/data/delete",{method:"DELETE",headers:{"X-CSRF-Token":csrf}});if(response.ok){onDisconnected();setMessage("All local application data was deleted. Refreshing…");setTimeout(()=>window.location.reload(),700)}else setMessage("Deletion failed.")};
-  const importData=async(file:File)=>{try{const payload=JSON.parse(await file.text());const response=await fetch("/api/data/import",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(payload)});const failure=response.ok?undefined:await response.json() as {error?:string};setMessage(response.ok?"Import completed. Refresh to see the data.":`Import failed: ${failure?.error??"unknown error"}`)}catch{setMessage("Invalid JSON export.")}};
-  const x=config.xConfiguration;
-  const ai=config.aiConfiguration;
-  const configured=(value:boolean)=>value?"Configured":"Not configured";
-  const protectedConfigured=(value:boolean|undefined)=>value===undefined?"Unavailable in public demo":configured(value);
-  return (
-    <div className="settings-layout settings-layout-wide">
-      <section className="panel settings-card">
-        <div className="panel-header">
-          <div>
-            <span className="eyebrow">CURRENT CONFIGURATION</span>
-            <h2>Runtime state</h2>
-            <p>This summary is derived from the protected server response. It shows status and safe labels only, never environment values or provider URLs.</p>
-          </div>
-          <div className={`connection-state ${connected?"is-connected":""}`}><i/>{connected?"Connected to X":"Not connected"}</div>
-        </div>
+type SettingsPageProps={
+  selected:SettingsSection;
+  onSelect:(section:SettingsSection)=>void;
+  connected:boolean;
+  config:AppRuntimeConfig;
+  csrf:string;
+  syncing:boolean;
+  onSaveLimits:(limits:{maxResources:number;maxSyncResources:number;maxWrites:number})=>Promise<UsageControlResult>;
+  onResetLimits:()=>Promise<UsageControlResult>;
+  onRuntimeRefresh:()=>void;
+  onDisconnected:()=>void;
+  onOpenGuide:()=>void;
+};
 
-        <section className="settings-section" aria-labelledby="instance-access-heading"><span className="eyebrow">INSTANCE ACCESS</span><h3 id="instance-access-heading">Instance access</h3><p>{config.accessProtected?"This instance requires local application access before workspace data is shown.":"This instance is not currently protected for browser access."}</p><div className="config-status"><ConfigurationLine label="APP_ACCESS_TOKEN" value={protectedConfigured(x?.appAccessTokenConfigured)} ok={Boolean(x?.appAccessTokenConfigured)}/></div><a className="text-btn" href="/privacy">Privacy notice</a></section>
-
-        <XStatusSurface status={config} syncing={syncing} error={syncError} onSync={onSync} onReconnect={onReconnect} onSettings={()=>setSetupReferenceOpen(true)} onCredits={onCredits}/>
-        <section className="settings-section"><div className="config-status"><ConfigurationLine label="X_CLIENT_ID" value={protectedConfigured(x?.xClientIdConfigured)} ok={Boolean(x?.xClientIdConfigured)}/><ConfigurationLine label="X_CLIENT_SECRET" value={protectedConfigured(x?.xClientSecretConfigured)} ok={Boolean(x?.xClientSecretConfigured)}/><ConfigurationLine label="SESSION_SECRET" value={protectedConfigured(x?.sessionSecretConfigured)} ok={Boolean(x?.sessionSecretConfigured)}/><ConfigurationLine label="APP_URL" value={protectedConfigured(x?.appUrlConfigured)} ok={Boolean(x?.appUrlConfigured)}/><ConfigurationLine label="Origin" value={config.origin?.currentMatchesCanonical?"This address matches APP_URL":"This address does not match APP_URL"} ok={Boolean(config.origin?.currentMatchesCanonical)}/></div><div className="settings-actions"><button className="danger-btn" onClick={disconnect}>Disconnect X</button></div></section>
-
-        <section className="settings-section" aria-labelledby="ai-drafting-heading"><span className="eyebrow">AI DRAFTING</span><h3 id="ai-drafting-heading">{ai?.state==="ready"?"AI drafting ready":"AI drafting is off"}</h3><p>Generation is user-initiated, editable, and requires human review. OpenX never publishes AI output automatically.</p><div className="config-status"><ConfigurationLine label="Provider" value={ai?.provider??"Unavailable in public demo"} ok={Boolean(ai)}/><ConfigurationLine label="Model" value={ai?.model??"Unavailable in public demo"} ok={Boolean(ai)}/><ConfigurationLine label="API key" value={configured(ai?.apiKeyConfigured??config.aiConfigured)} ok={ai?.apiKeyConfigured??config.aiConfigured}/><ConfigurationLine label="Content approval" value={(ai?.contentApproved??config.aiContentApproved)?"Enabled":"Disabled"} ok={ai?.contentApproved??config.aiContentApproved}/><ConfigurationLine label="Reply approval" value={(ai?.repliesApproved??config.aiRepliesApproved)?"Enabled":"Disabled"} ok={ai?.repliesApproved??config.aiRepliesApproved}/></div></section>
-
-        <section className="settings-section" aria-labelledby="publishing-heading"><span className="eyebrow">PUBLISHING / AUTOMATION</span><h3 id="publishing-heading">Publishing and automation</h3><p>Publishing remains human-approved. Ambiguous provider acceptance requires reconciliation; no autonomous engagement is enabled.</p><div className="config-status"><ConfigurationLine label="CRON_SECRET" value={protectedConfigured(x?.cronSecretConfigured)} ok={Boolean(x?.cronSecretConfigured)}/><ConfigurationLine label="OPENX_API_TOKEN" value={protectedConfigured(x?.apiTokenConfigured)} ok={Boolean(x?.apiTokenConfigured)}/><ConfigurationLine label="Evergreen" value={config.evergreenEnabled?"Enabled":"Disabled"} ok={config.evergreenEnabled}/></div></section>
-
-        <section className="settings-section" aria-labelledby="data-privacy-heading"><span className="eyebrow">DATA AND PRIVACY</span><h3 id="data-privacy-heading">Data and privacy</h3><p>Disconnect removes authorization and the temporary ideas/replies cache. Export, import, and delete-all retain their separate explicit scopes.</p><div className="settings-actions"><a className="outline-btn" href="/api/data/export" download>Export all data</a><label className="outline-btn file-button">Import JSON<input type="file" accept="application/json" onChange={(event)=>{const file=event.target.files?.[0];if(file)void importData(file)}}/></label><button className="danger-btn" onClick={disconnect}>Disconnect X</button><button className="danger-btn" onClick={deleteAll}>Delete all local data</button><a className="outline-btn" href="/privacy">Privacy notice</a></div>{message&&<div className="form-disclaimer" role="status"><Check size={14}/><span>{message}</span></div>}</section>
-
-        <button className="setup-help" onClick={onOpenGuide}><Lightbulb size={16}/><span><strong>Prefer a step-by-step wizard?</strong><small>Open the interactive setup guide</small></span><ArrowUpRight size={15}/></button>
-
-        <button className="setup-reference-toggle" onClick={()=>setSetupReferenceOpen((open)=>!open)} aria-expanded={setupReferenceOpen}><span><small>ADVANCED SETUP REFERENCE</small><strong>Installation examples and schema requirements</strong><em>Reference values below are not the current runtime configuration.</em></span><ChevronDown size={16}/></button>
-        {setupReferenceOpen&&<div className="setup-reference">
-        <GuideStep n={1} title="Create an app in the X Developer Console">
-          <div className="instruction-list">
-            <div><b>1</b><p><strong>Go to console.x.com</strong><span>Create a project, then a new app dedicated to this OpenX instance.</span></p></div>
-            <div><b>2</b><p><strong>User authentication → OAuth 2.0 → Enable</strong><span>Type: Web App or Single Page App. Permissions: <em>Read and write</em>.</span></p></div>
-            <div><b>3</b><p><strong>Copy the OAuth 2.0 Client ID</strong><span>This is <code>X_CLIENT_ID</code>. It is public; the secret (if any) stays server-side only.</span></p></div>
-            <div><b>4</b><p><strong>Confidential clients only</strong><span>If X shows a Client Secret, set <code>X_CLIENT_SECRET</code> in env. Public PKCE clients can leave it empty.</span></p></div>
-          </div>
-          <a className="external-action" href={X_DEV_CONSOLE} target="_blank" rel="noreferrer">Open X Developer Console <ArrowUpRight size={15}/></a>
-        </GuideStep>
-
-        <GuideStep n={2} title="Register these URLs in your X app">
-          <CopyField label="Website URL (also set APP_URL in env)" hint="Must match your deployment origin exactly, no trailing slash." value={origin} />
-          <CopyField label="Callback / Redirect URI" hint="Paste into X OAuth settings. OpenX handles the callback at /api/x/oauth/callback." value={callback} />
-          <div className="scope-box">
-            <strong>OAuth scopes requested by OpenX</strong>
-            <div><code>tweet.read</code><code>tweet.write</code><code>users.read</code><code>offline.access</code></div>
-            <p><code>offline.access</code> enables refresh tokens for sync, publishing and scheduled posts.</p>
-          </div>
-        </GuideStep>
-
-        <GuideStep n={3} title="Set environment variables on the server">
-          <p className="settings-lead">Copy <code>.env.example</code> to <code>.env.local</code> for development, or use your host&apos;s secret manager in production. <strong>Never commit real values to Git.</strong></p>
-          <div className="env-var-list">
-            <EnvVarRow name="X_CLIENT_ID" required description="OAuth 2.0 Client ID from the X Developer Console. Enables OAuth start and token exchange." example="X_CLIENT_ID=your_oauth_2_client_id" />
-            <EnvVarRow name="SESSION_SECRET" required description="Encrypts OAuth tokens before D1 storage. Generate with: openssl rand -base64 48" example="SESSION_SECRET=a_long_random_string_at_least_32_chars" />
-            <EnvVarRow name="APP_URL" required description="Public origin of this deployment. Must match Website URL registered in X." example={`APP_URL=${origin}`} />
-            <EnvVarRow name="X_CLIENT_SECRET" description="Only if X treats your app as a confidential OAuth client. Public SPA/PKCE apps skip this." example="X_CLIENT_SECRET=" />
-            <EnvVarRow name="APP_ACCESS_TOKEN" required description="Required before configuring X. It may be empty only for the unconfigured, write-disabled public demo." example="APP_ACCESS_TOKEN=a_distinct_random_access_token" />
-            <EnvVarRow name="CRON_SECRET" description="Protects POST /api/cron/publish for scheduled publishing. Use a unique random value." example="CRON_SECRET=openssl_rand_base64_32" />
-            <EnvVarRow name="OPENX_API_TOKEN" description="Bearer token for REST API and MCP automation. Separate from X credentials." example="OPENX_API_TOKEN=openssl_rand_base64_32" />
-          </div>
-          <div className="security-note"><Github size={16}/><p><strong>After editing env vars</strong><span>Restart the dev server or redeploy. Settings status lines above should turn green before connecting X.</span></p></div>
-        </GuideStep>
-
-        <GuideStep n={4} title="Authorize your X account (OAuth)">
-          <div className="instruction-list">
-            <div><b>1</b><p><strong>Click Continue with X below</strong><span>Redirects to X login and permission review.</span></p></div>
-            <div><b>2</b><p><strong>Approve requested scopes</strong><span>X sends a one-time code to {callback}.</span></p></div>
-            <div><b>3</b><p><strong>OpenX exchanges the code</strong><span>Access + refresh tokens are encrypted and stored in your database.</span></p></div>
-            <div><b>4</b><p><strong>Discover → Sync from X</strong><span>Replaces demo signals with live ideas and reply opportunities from your home timeline.</span></p></div>
-          </div>
-          <div className="settings-actions settings-actions-primary">
-            {connected
-              ? <button className="danger-btn" onClick={disconnect}>Disconnect X and delete tokens</button>
-              : <a className={`primary-btn ${!config.configured?"disabled":""}`} href={config.configured?"/api/x/oauth/start":"#"}><Link2 size={16}/> Continue with X</a>}
-            <a className="outline-btn" href={X_OAUTH_DOCS} target="_blank" rel="noreferrer">X OAuth docs <ArrowUpRight size={14}/></a>
-          </div>
-          {!config.configured && <div className="inline-error">Set X_CLIENT_ID and SESSION_SECRET first, then restart the server.</div>}
-        </GuideStep>
-
-        <GuideStep n={5} title="Optional — AI writing assistant">
-          <p className="settings-lead">AI is off by default. OpenX calls <em>your</em> OpenAI-compatible API; content is never sent to OpenX maintainers.</p>
-          <div className="env-var-list">
-            <EnvVarRow name="AI_API_KEY" description="API key from OpenAI, OpenRouter, or any OpenAI-compatible provider." example="AI_API_KEY=sk-..." />
-            <EnvVarRow name="AI_BASE_URL" description="Provider base URL." example="AI_BASE_URL=https://api.openai.com/v1" />
-            <EnvVarRow name="AI_MODEL" description="Model slug used for suggestions in the composer." example="AI_MODEL=gpt-4o-mini" />
-            <EnvVarRow name="X_AI_CONTENT_APPROVED" description="Set to true only after you confirm your X developer use case permits AI-assisted drafting." example="X_AI_CONTENT_APPROVED=false" />
-            <EnvVarRow name="X_AI_REPLIES_APPROVED" description="Set to true only if AI-assisted reply suggestions are permitted for your use case." example="X_AI_REPLIES_APPROVED=false" />
-          </div>
-          <div className="security-note"><Sparkles size={16}/><p><strong>Human review required</strong><span>AI output is always labeled and must be edited before publish. No autonomous replies or DMs.</span></p></div>
-        </GuideStep>
-
-        <GuideStep n={6} title="Optional — Scheduled publishing">
-          <p className="settings-lead">Schedule posts in the composer, then call the protected cron endpoint every 5 minutes from GitHub Actions, cron, or your host.</p>
-          <CopyField label="Cron publish command" hint="Replace $CRON_SECRET with the value from your environment." value={cronExample} />
-        </GuideStep>
-
-        <GuideStep n={7} title="Data controls">
-          <div className="settings-actions">
-            <a className="outline-btn" href="/api/data/export" download>Export all data</a>
-            <label className="outline-btn file-button">Import JSON<input type="file" accept="application/json" onChange={(event)=>{const file=event.target.files?.[0];if(file)void importData(file)}}/></label>
-            <button className="danger-btn" onClick={deleteAll}>Delete all local data</button>
-            <a className="outline-btn" href="/privacy">Privacy notice</a>
-          </div>
-          {message && <div className="form-disclaimer"><Check size={14}/><span>{message}</span></div>}
-        </GuideStep>
-        </div>}
-      </section>
-
-      <aside className="panel principle-card settings-checklist">
-        <Code2 size={22}/>
-        <h3>Quick checklist</h3>
-        <ol className="setup-checklist">
-          <li className={config.configured?"done":""}>X app created + Client ID copied</li>
-          <li className={config.configured?"done":""}>Callback URL registered in X</li>
-          <li className={config.configured?"done":""}>SESSION_SECRET generated</li>
-          <li className={connected?"done":""}>Continue with X completed</li>
-          <li className={synced?"done":""}>Discover → Sync from X</li>
-          <li>Content → create draft → publish test</li>
-        </ol>
-        <p>OAuth tokens never appear in the UI or exports. Disconnect removes encrypted tokens from your database.</p>
-        <a href="https://github.com/dg996/OpenX-Growth/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security model <ArrowUpRight size={13}/></a>
-      </aside>
-    </div>
-  );
+function SettingsToggle({checked,onChange,title,description}:{checked:boolean;onChange:(checked:boolean)=>void;title:string;description:string}) {
+  return <label className="settings-toggle"><span><strong>{title}</strong><small>{description}</small></span><input type="checkbox" checked={checked} onChange={(event)=>onChange(event.target.checked)}/><i aria-hidden="true"/></label>;
 }
 
-function ConfigurationLine({ok,label,value}:{ok:boolean;label:string;value:string}) {
-  return <div className={ok?"ok":"neutral"}>{ok?<Check size={14}/>:<CircleGauge size={14}/>}<span>{label}</span><b>{value}</b></div>;
+function SettingsFeedback({message,error}:{message:string;error:boolean}) {
+  if(!message)return null;
+  return <div className={`settings-feedback ${error?"error":"success"}`} role={error?"alert":"status"}>{error?<CircleGauge size={15}/>:<Check size={15}/>}<span>{message}</span></div>;
+}
+
+function SettingsPage({selected,onSelect,connected,config,csrf,syncing,onSaveLimits,onResetLimits,onRuntimeRefresh,onDisconnected,onOpenGuide}:SettingsPageProps) {
+  const [settings,setSettings]=useState<RuntimeSettingsData>();
+  const [loading,setLoading]=useState(true);
+  const [busy,setBusy]=useState<SettingsSection|null>(null);
+  const [feedback,setFeedback]=useState<{section:SettingsSection;message:string;error:boolean}|null>(null);
+  const [origin]=useState(()=>typeof window==="undefined"?"https://your-domain.com":window.location.origin);
+  const [clientId,setClientId]=useState("");
+  const [clientSecret,setClientSecret]=useState("");
+  const [clearClientSecret,setClearClientSecret]=useState(false);
+  const [aiProvider,setAiProvider]=useState<RuntimeSettingsData["ai"]["provider"]>("OpenRouter");
+  const [aiBaseUrl,setAiBaseUrl]=useState("https://openrouter.ai/api/v1");
+  const [aiModel,setAiModel]=useState("");
+  const [aiApiKey,setAiApiKey]=useState("");
+  const [clearAiApiKey,setClearAiApiKey]=useState(false);
+  const [contentApproved,setContentApproved]=useState(false);
+  const [repliesApproved,setRepliesApproved]=useState(false);
+  const [evergreen,setEvergreen]=useState(false);
+  const [syncTtl,setSyncTtl]=useState("900");
+  const [cronSecret,setCronSecret]=useState("");
+  const [clearCronSecret,setClearCronSecret]=useState(false);
+  const [apiToken,setApiToken]=useState("");
+  const [clearApiToken,setClearApiToken]=useState(false);
+  const [appAccessToken,setAppAccessToken]=useState("");
+  const [dataMessage,setDataMessage]=useState("");
+
+  const applySettings=(next:RuntimeSettingsData)=>{
+    setSettings(next);
+    setClientId(next.x.clientId);
+    setAiProvider(next.ai.provider);
+    setAiBaseUrl(next.ai.baseUrl);
+    setAiModel(next.ai.model);
+    setContentApproved(next.ai.contentApproved);
+    setRepliesApproved(next.ai.repliesApproved);
+    setEvergreen(next.publishing.evergreenEnabled);
+    setSyncTtl(String(next.publishing.syncTtlSeconds));
+  };
+
+  useEffect(()=>{
+    let active=true;
+    void (async()=>{
+      try{
+        const response=await fetch("/api/settings",{cache:"no-store"});
+        if(!response.ok)throw new Error("SETTINGS_UNAVAILABLE");
+        const payload=await response.json() as RuntimeSettingsData;
+        if(active)applySettings(payload);
+      }catch{if(active)setFeedback({section:"security",message:"Settings could not be loaded. Complete the guided setup, then reload this page.",error:true})}
+      finally{if(active)setLoading(false)}
+    })();
+    return()=>{active=false};
+  },[]);
+
+  const save=async(section:SettingsSection,body:Record<string,unknown>,successMessage:string)=>{
+    if(!csrf){setFeedback({section,message:"Settings are not ready yet. Reload the page and try again.",error:true});return false}
+    setBusy(section);setFeedback(null);
+    try{
+      const response=await fetch("/api/settings",{method:"PATCH",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(body)});
+      const payload=await response.json().catch(()=>({})) as {error?:string;settings?:RuntimeSettingsData;xAuthorizationCleared?:boolean};
+      if(!response.ok||!payload.settings)throw new Error(payload.error??"SETTINGS_SAVE_FAILED");
+      applySettings(payload.settings);
+      setClientSecret("");setAiApiKey("");setCronSecret("");setApiToken("");setAppAccessToken("");
+      setClearClientSecret(false);setClearAiApiKey(false);setClearCronSecret(false);setClearApiToken(false);
+      if(payload.xAuthorizationCleared)onDisconnected();
+      onRuntimeRefresh();
+      setFeedback({section,message:successMessage,error:false});
+      return true;
+    }catch(error){
+      const code=error instanceof Error?error.message:"SETTINGS_SAVE_FAILED";
+      const message=code==="INVALID_SETTINGS_INPUT"?"Check the highlighted values and try again.":"OpenX could not save these settings.";
+      setFeedback({section,message,error:true});
+      return false;
+    }finally{setBusy(null)}
+  };
+
+  const submitX=(event:FormEvent)=>{event.preventDefault();void save("x",{section:"x",clientId:clientId.trim(),...(clientSecret?{clientSecret}:{}),clearClientSecret},"X application settings saved. Reconnect X if you changed the credentials.")};
+  const submitAi=(event:FormEvent)=>{event.preventDefault();void save("ai",{section:"ai",baseUrl:aiBaseUrl.trim(),model:aiModel.trim(),...(aiApiKey?{apiKey:aiApiKey}:{}),clearApiKey:clearAiApiKey,contentApproved,repliesApproved},"AI settings saved. The API key is encrypted and will not be shown again.")};
+  const submitPublishing=(event:FormEvent)=>{event.preventDefault();const ttl=Number(syncTtl);if(!Number.isInteger(ttl)||ttl<60||ttl>86_400){setFeedback({section:"publishing",message:"Sync cache must be a whole number from 60 to 86,400 seconds.",error:true});return}void save("publishing",{section:"publishing",evergreenEnabled:evergreen,syncTtlSeconds:ttl,...(cronSecret?{cronSecret}:{}),clearCronSecret,...(apiToken?{apiToken}:{}),clearApiToken},"Publishing settings saved.")};
+  const submitAccess=(event:FormEvent)=>{event.preventDefault();if(appAccessToken.length<16){setFeedback({section:"security",message:"Use an access token with at least 16 characters.",error:true});return}void save("security",{section:"access",appAccessToken},"Application access token replaced. Use the new token the next time you sign in.")};
+  const chooseAiProvider=(provider:RuntimeSettingsData["ai"]["provider"])=>{setAiProvider(provider);if(provider==="OpenRouter")setAiBaseUrl("https://openrouter.ai/api/v1");if(provider==="OpenAI")setAiBaseUrl("https://api.openai.com/v1")};
+
+  const disconnect=async()=>{if(!window.confirm("Disconnect X and delete its saved authorization? Drafts and analytics remain."))return;const response=await fetch("/api/x/disconnect",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify({intent:"disconnect"})});if(response.ok){onDisconnected();setDataMessage("X was disconnected. Drafts, schedules and analytics remain.")}else setDataMessage("OpenX could not disconnect X.")};
+  const deleteAll=async()=>{if(!window.confirm("Delete every local draft, schedule, metric, cached X post, OAuth token and setting saved in this app? This cannot be undone."))return;const response=await fetch("/api/data/delete",{method:"DELETE",headers:{"X-CSRF-Token":csrf}});if(response.ok){onDisconnected();setDataMessage("All local application data was deleted. Refreshing…");setTimeout(()=>window.location.reload(),700)}else setDataMessage("Deletion failed.")};
+  const importData=async(file:File)=>{try{const payload=JSON.parse(await file.text());const response=await fetch("/api/data/import",{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(payload)});const failure=response.ok?undefined:await response.json() as {error?:string};setDataMessage(response.ok?"Import completed. Refresh to see the data.":`Import failed: ${failure?.error??"unknown error"}`)}catch{setDataMessage("Invalid JSON export.")}};
+
+  const sections:Array<{id:SettingsSection;label:string;description:string;icon:typeof Settings;status?:string}>=[
+    {id:"x",label:"X account",description:"OAuth app and connection",icon:Link2,status:connected?"Connected":settings?.x.clientId?"Ready":"Setup needed"},
+    {id:"ai",label:"AI provider",description:"OpenRouter, OpenAI or custom",icon:Sparkles,status:settings?.ai.apiKeyConfigured?"Configured":"Optional"},
+    {id:"publishing",label:"Publishing",description:"Evergreen and integrations",icon:Send},
+    {id:"limits",label:"Limits",description:"Local safety caps",icon:CreditCard},
+    {id:"security",label:"Security",description:"Application access",icon:Settings},
+    {id:"data",label:"Data & privacy",description:"Export, import and delete",icon:FileText},
+  ];
+  const sectionFeedback=feedback?.section===selected?feedback:null;
+
+  return <div className="settings-page">
+    <aside className="panel settings-nav" aria-label="Settings sections">
+      <header><span className="eyebrow">SETTINGS</span><h2>Manage OpenX</h2><p>Change the application directly. Secrets are never shown after saving.</p></header>
+      <nav>{sections.map(({id,label,description,icon:Icon,status})=><button key={id} className={selected===id?"active":""} onClick={()=>onSelect(id)}><Icon size={17}/><span><strong>{label}</strong><small>{description}</small></span>{status&&<em>{status}</em>}</button>)}</nav>
+    </aside>
+
+    <section className="panel settings-content" aria-live="polite">
+      {loading?<div className="settings-loading"><CircleGauge size={24}/><p>Loading settings…</p></div>:<>
+        {selected==="x"&&<form className="settings-form" onSubmit={submitX}>
+          <div className="settings-intro"><div><span className="eyebrow">X ACCOUNT</span><h2>Connect your X application</h2><p>Paste the OAuth credentials from the X Developer Console. You never paste an X access token here.</p></div><span className={`settings-state ${connected?"ok":""}`}><i/>{connected?"Connected":"Not connected"}</span></div>
+          <div className="settings-field-grid"><label className="settings-field"><span>OAuth 2.0 Client ID <b>Required</b></span><input value={clientId} onChange={(event)=>setClientId(event.target.value)} autoComplete="off" placeholder="Paste the Client ID" required minLength={3}/><small>Found under your X app OAuth 2.0 settings.</small></label><label className="settings-field"><span>Client secret <b>Only if X provides one</b></span><input type="password" value={clientSecret} onChange={(event)=>setClientSecret(event.target.value)} autoComplete="new-password" placeholder={settings?.x.clientSecretConfigured?"Saved securely — leave blank to keep":"Optional for public PKCE apps"}/><small>The existing value is never returned to the browser.</small></label></div>
+          {settings?.x.clientSecretConfigured&&<label className="settings-clear"><input type="checkbox" checked={clearClientSecret} onChange={(event)=>setClearClientSecret(event.target.checked)}/> Remove the saved client secret when I save</label>}
+          <div className="settings-callbacks"><CopyField label="Website URL" value={origin}/><CopyField label="Callback / Redirect URI" value={`${origin}/api/x/oauth/callback`}/></div>
+          <div className="settings-note"><CircleGauge size={16}/><p><strong>Changing these credentials disconnects X.</strong><span>You will authorize the account again with the new application.</span></p></div>
+          <div className="settings-save-row"><button className="primary-btn" disabled={busy==="x"||!clientId.trim()}>{busy==="x"?"Saving…":"Save X settings"}</button><a className="outline-btn" href={X_DEV_CONSOLE} target="_blank" rel="noreferrer">Open X Developer Console <ArrowUpRight size={14}/></a>{!connected&&config.configured&&<a className="outline-btn" href="/api/x/oauth/start"><Link2 size={14}/> Continue with X</a>}{connected&&<button type="button" className="danger-btn" onClick={()=>void disconnect()}>Disconnect X</button>}</div>
+          <SettingsFeedback message={sectionFeedback?.message??""} error={sectionFeedback?.error??false}/>
+        </form>}
+
+        {selected==="ai"&&<form className="settings-form" onSubmit={submitAi}>
+          <div className="settings-intro"><div><span className="eyebrow">AI PROVIDER</span><h2>Add OpenRouter without Cloudflare</h2><p>Choose a provider, paste its API key here, select a model and save. OpenX stores the key encrypted in its database.</p></div><span className={`settings-state ${settings?.ai.apiKeyConfigured?"ok":""}`}><i/>{settings?.ai.apiKeyConfigured?"Configured":"Optional"}</span></div>
+          <div className="settings-field-grid"><label className="settings-field"><span>Provider</span><select value={aiProvider} onChange={(event)=>chooseAiProvider(event.target.value as RuntimeSettingsData["ai"]["provider"])}><option>OpenRouter</option><option>OpenAI</option><option>Custom OpenAI-compatible</option></select><small>The endpoint is filled automatically for OpenRouter and OpenAI.</small></label><label className="settings-field"><span>Model</span><input value={aiModel} onChange={(event)=>setAiModel(event.target.value)} placeholder={aiProvider==="OpenRouter"?"Example: openai/gpt-5-mini":"Model ID"} required/><small>Use the exact model ID supported by your provider.</small></label></div>
+          {aiProvider==="Custom OpenAI-compatible"&&<label className="settings-field"><span>Provider base URL</span><input type="url" value={aiBaseUrl} onChange={(event)=>setAiBaseUrl(event.target.value)} placeholder="https://provider.example/v1" required/><small>HTTPS only. Do not include credentials, query parameters or fragments.</small></label>}
+          <label className="settings-field"><span>API key</span><input type="password" value={aiApiKey} onChange={(event)=>setAiApiKey(event.target.value)} autoComplete="new-password" placeholder={settings?.ai.apiKeyConfigured?"Saved securely — leave blank to keep":"Paste the provider API key"}/><small>The key is write-only: after saving, OpenX only shows whether one exists.</small></label>
+          {settings?.ai.apiKeyConfigured&&<label className="settings-clear"><input type="checkbox" checked={clearAiApiKey} onChange={(event)=>setClearAiApiKey(event.target.checked)}/> Remove the saved AI key when I save</label>}
+          <div className="settings-toggle-list"><SettingsToggle checked={contentApproved} onChange={setContentApproved} title="AI-assisted content drafts" description="Allow generation only when you explicitly request a draft."/><SettingsToggle checked={repliesApproved} onChange={setRepliesApproved} title="AI-assisted reply drafts" description="Allow reply suggestions for human review. Nothing is posted automatically."/></div>
+          <div className="settings-save-row"><button className="primary-btn" disabled={busy==="ai"||!aiModel.trim()||!aiBaseUrl.trim()}>{busy==="ai"?"Saving…":"Save AI settings"}</button>{aiProvider==="OpenRouter"&&<a className="outline-btn" href={OPENROUTER_KEYS} target="_blank" rel="noreferrer">Get an OpenRouter key <ArrowUpRight size={14}/></a>}</div>
+          <SettingsFeedback message={sectionFeedback?.message??""} error={sectionFeedback?.error??false}/>
+        </form>}
+
+        {selected==="publishing"&&<form className="settings-form" onSubmit={submitPublishing}>
+          <div className="settings-intro"><div><span className="eyebrow">PUBLISHING</span><h2>Publishing and integrations</h2><p>Keep normal publishing human-approved. The advanced keys are only needed for cron, API or MCP integrations.</p></div></div>
+          <div className="settings-toggle-list"><SettingsToggle checked={evergreen} onChange={setEvergreen} title="Evergreen repost scheduling" description="Allow an explicitly marked post to be scheduled again. Disabled by default."/></div>
+          <label className="settings-field settings-field-narrow"><span>Sync cache duration</span><div className="settings-unit-input"><input type="number" min="60" max="86400" step="1" value={syncTtl} onChange={(event)=>setSyncTtl(event.target.value)}/><b>seconds</b></div><small>How long a successful X sync is treated as fresh. Default: 900 seconds.</small></label>
+          <details className="settings-advanced"><summary>Advanced integration keys <span>Optional</span></summary><div className="settings-field-grid"><div className="settings-field"><label htmlFor="settings-cron-secret"><span>Scheduled publishing secret</span></label><input id="settings-cron-secret" type="password" value={cronSecret} onChange={(event)=>setCronSecret(event.target.value)} autoComplete="new-password" placeholder={settings?.publishing.cronSecretConfigured?"Saved securely — leave blank to keep":"Optional CRON_SECRET"}/><small>Protects the scheduled publishing endpoint.</small>{settings?.publishing.cronSecretConfigured&&<label className="settings-clear"><input type="checkbox" checked={clearCronSecret} onChange={(event)=>setClearCronSecret(event.target.checked)}/> Remove saved secret</label>}</div><div className="settings-field"><label htmlFor="settings-api-token"><span>API and MCP token</span></label><input id="settings-api-token" type="password" value={apiToken} onChange={(event)=>setApiToken(event.target.value)} autoComplete="new-password" placeholder={settings?.publishing.apiTokenConfigured?"Saved securely — leave blank to keep":"Optional OPENX_API_TOKEN"}/><small>Bearer token for API and MCP access.</small>{settings?.publishing.apiTokenConfigured&&<label className="settings-clear"><input type="checkbox" checked={clearApiToken} onChange={(event)=>setClearApiToken(event.target.checked)}/> Remove saved token</label>}</div></div></details>
+          <div className="settings-save-row"><button className="primary-btn" disabled={busy==="publishing"}>{busy==="publishing"?"Saving…":"Save publishing settings"}</button></div>
+          <SettingsFeedback message={sectionFeedback?.message??""} error={sectionFeedback?.error??false}/>
+        </form>}
+
+        {selected==="limits"&&<><LimitsSettings key={`${config.usage?.maxResources??0}:${config.usage?.maxSyncResources??0}:${config.usage?.maxWrites??0}`} config={config} syncing={syncing} onSave={onSaveLimits} onReset={onResetLimits}/></>}
+
+        {selected==="security"&&<div className="settings-form">
+          <div className="settings-intro"><div><span className="eyebrow">SECURITY</span><h2>Protect this OpenX installation</h2><p>Replace the password-like access token used to open the app. Saved service keys remain encrypted with the installation secret.</p></div><span className={`settings-state ${settings?.access.appAccessTokenConfigured?"ok":""}`}><i/>{settings?.access.appAccessTokenConfigured?"Protected":"Action required"}</span></div>
+          <form className="settings-subcard" onSubmit={submitAccess}><label className="settings-field"><span>Application access token</span><input type="password" value={appAccessToken} onChange={(event)=>setAppAccessToken(event.target.value)} autoComplete="new-password" placeholder="Enter a new token with at least 16 characters" required minLength={16}/><small>This replaces the token used on the OpenX sign-in screen. The existing token is never displayed.</small></label><div className="settings-save-row"><button className="primary-btn" disabled={busy==="security"||appAccessToken.length<16}>{busy==="security"?"Saving…":"Replace access token"}</button></div></form>
+          <div className="settings-bootstrap"><div><Check size={16}/><span><strong>Encryption key</strong><small>{settings?.access.sessionSecretConfigured?"Configured during installation":"Missing — run guided setup"}</small></span></div><div><Check size={16}/><span><strong>Public application address</strong><small>{config.origin?.currentMatchesCanonical?"This address matches the deployment configuration":"Review the deployment address before connecting X"}</small></span></div></div>
+          <CopyField label="Current application address" value={origin}/>
+          <div className="settings-note"><Settings size={16}/><p><strong>Why two values stay in installation setup</strong><span>The encryption key must exist before OpenX can safely store the other keys. The public address is owned by the deployment and OAuth callback. Everything used day to day is editable above.</span></p></div>
+          <button type="button" className="setup-help" onClick={onOpenGuide}><Lightbulb size={16}/><span><strong>Installation or recovery help</strong><small>Open the guided setup</small></span><ArrowUpRight size={15}/></button>
+          <SettingsFeedback message={sectionFeedback?.message??""} error={sectionFeedback?.error??false}/>
+        </div>}
+
+        {selected==="data"&&<div className="settings-form">
+          <div className="settings-intro"><div><span className="eyebrow">DATA &amp; PRIVACY</span><h2>Your local OpenX data</h2><p>Export a backup, restore one, disconnect X, or permanently delete data stored by this installation.</p></div></div>
+          <div className="data-action-list"><div><span><strong>Export a backup</strong><small>Download drafts, schedules, analytics and feedback. Credentials and operational settings are excluded.</small></span><a className="outline-btn" href="/api/data/export" download>Export JSON</a></div><div><span><strong>Import a backup</strong><small>Restore a valid OpenX JSON export. Remote publishing identities are never restored.</small></span><label className="outline-btn file-button">Choose JSON<input type="file" accept="application/json" onChange={(event)=>{const file=event.target.files?.[0];if(file)void importData(file)}}/></label></div><div><span><strong>Disconnect X</strong><small>Delete X authorization and temporary ideas/replies cache. Durable local content remains.</small></span><button className="danger-btn" onClick={()=>void disconnect()}>Disconnect X</button></div><div className="danger-zone"><span><strong>Delete all local data</strong><small>Permanently removes content, analytics, cached X data, OAuth tokens and settings saved in this app.</small></span><button className="danger-btn" onClick={()=>void deleteAll()}>Delete all data</button></div></div>
+          {dataMessage&&<div className="settings-feedback" role="status"><Check size={15}/><span>{dataMessage}</span></div>}
+          <a className="text-btn" href="/privacy">Read the privacy notice <ArrowUpRight size={13}/></a>
+        </div>}
+      </>}
+    </section>
+  </div>;
 }
